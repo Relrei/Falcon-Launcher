@@ -7,6 +7,8 @@ use super::*;
 use super::page::{bold, day_of, elide};
 use queue::JobState;
 
+mod setup_page;
+
 pub(super) const RAIL_W: f32 = 68.0;
 pub(super) const TOP_H: f32 = 50.0;
 const RIGHT_W: f32 = 300.0;
@@ -590,6 +592,7 @@ impl App {
         let mut open_ver = None;
         let mut go = None;
         Self::page_scroll(ui, "dash", |ui, w| {
+            self.update_banner(ui, ctx);
             // 新しく起動する所
             if let Some(b) = self.cur_build() {
                 self.launch_block(ui, &b, &mut actions);
@@ -1252,6 +1255,7 @@ impl App {
         ui.label(RichText::new(txt).font(bold(14.0)).color(col));
         ui.label(RichText::new("NVIDIA の物(CUDA・OptiX・DLSS)は、GitHub の README の場所から取り、下の枠へ落とすか、置いた場所を入れてください。パッケージの命令は sudo が要るので、写して端末で打ってください").size(12.0).color(FAINT));
         ui.add_space(14.0);
+        self.setup_card(ui, w, ctx);
         self.prep_drop_card(ui, w, ctx);
 
         let mut groups: Vec<&'static str> = vec![];

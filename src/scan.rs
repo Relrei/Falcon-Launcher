@@ -136,8 +136,13 @@ fn read_kv(path: &Path) -> HashMap<String, String> {
 
 /// build.log の最後の ninja の行 [n/m] から進み具合
 pub fn progress(dir: &Path) -> Progress {
+    progress_file(&dir.join("build.log"))
+}
+
+/// 記録の終わりから ninja の [n/m] を拾う
+pub fn progress_file(log: &Path) -> Progress {
     let mut p = Progress::default();
-    let Ok(bytes) = read_tail(&dir.join("build.log"), 16384) else { return p };
+    let Ok(bytes) = read_tail(log, 16384) else { return p };
     let text = String::from_utf8_lossy(&bytes);
     for line in text.lines().rev() {
         let Some(rest) = line.strip_prefix('[') else { continue };
@@ -478,6 +483,19 @@ fn blender_versions() -> Vec<Build> {
         }
         out.push(b);
     }
+    // 更新の時に残した前の版(<建てる場所>/前の版/<版>/blender。setup.rs が移す)
+    if let Some(place) = v5.parent() {
+        let mut prev: Vec<PathBuf> = fs::read_dir(place.join("前の版")).into_iter().flatten().flatten().map(|e| e.path()).filter(|d| d.join("blender").is_file()).collect();
+        prev.sort();
+        for d in prev.into_iter().rev() {
+            let ver = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let bin = d.join("blender").display().to_string();
+            let exec = if !pl.dlss_runtime.is_empty() && !pl.dlss_runtime.contains(char::is_whitespace) { format!("env FALCON_DLSS_RUNTIME_PATH={} {bin}", pl.dlss_runtime) } else { bin };
+            let mut b = mk(format!("prev:{ver}"), format!("Falcon Engine {ver}(前の版)"), format!("更新の前に建てていた版({})", d.display()), d.clone(), exec, "Falcon Engine", "", "");
+            b.built_ts = mtime(&d.join("blender"));
+            out.push(b);
+        }
+    }
     for (bin, ver) in official_blenders() {
         let dir = bin.parent().map(Path::to_path_buf).unwrap_or_default();
         // key はフォルダ名にも使うので「/」を除く
@@ -521,7 +539,7 @@ pub fn official_blenders() -> Vec<(PathBuf, String)> {
 }
 
 /// Falcon Engine の版(建て先のアドオンの bl_info の "version": (0, 2, 0) → 0.2.0)
-fn falcon_version(build: &Path) -> Option<String> {
+pub fn falcon_version(build: &Path) -> Option<String> {
     let addons = fs::read_dir(build.join("bin")).ok()?.flatten().map(|e| e.path().join("scripts/addons_core/neural_render/__init__.py")).find(|p| p.is_file())?;
     let text = fs::read_to_string(addons).ok()?;
     let line = text.lines().find(|l| l.trim_start().starts_with("\"version\""))?;

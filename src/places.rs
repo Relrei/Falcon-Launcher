@@ -11,6 +11,8 @@ pub struct Places {
     pub source: String,
     /// Falcon Engine の建て先(bin/blender がある所)
     pub falcon_build: String,
+    /// Falcon Engine の置き場(空なら GitHub の Relrei/Falcon-Engine)。写しや試しの置き場を指す時に書く
+    pub falcon_repo: String,
     /// 建て先の版を推し量る枝(公開の木は HEAD)
     pub falcon_branch: String,
     /// 起動の時に渡す DLSS のランタイムの置き場(FALCON_DLSS_RUNTIME_PATH)。空なら渡さない
@@ -100,6 +102,7 @@ pub fn places() -> &'static Places {
             prep.get("dlss").map(|d| format!("{d}/lib/Linux_x86_64/rel")).filter(|d| Path::new(d).is_dir()).unwrap_or_default()
         });
         Places {
+            falcon_repo: get("falcon_repo").unwrap_or_default(),
             falcon_branch: get("falcon_branch").unwrap_or_else(|| "HEAD".into()),
             project: get("project").unwrap_or_default(),
             wrapper: get("wrapper").unwrap_or_default(),

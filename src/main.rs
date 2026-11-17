@@ -8,6 +8,7 @@ mod places;
 mod prep;
 mod queue;
 mod scan;
+mod setup;
 mod shell;
 mod start;
 
@@ -346,6 +347,14 @@ struct App {
     prep_rx: Option<Receiver<Result<prep::Taken, String>>>,
     prep_cmd: Option<(String, String)>,
     prep_paste: String,
+    /// 取って建てる・更新(setup.rs): 置き場の版の見回り・確かめの画面・走っている物
+    remote: setup::Remote,
+    remote_rx: Option<Receiver<Result<Vec<String>, String>>>,
+    setup_confirm: Option<setup::Plan>,
+    setup_status: setup::Status,
+    setup_running: bool,
+    setup_info: setup::Info,
+    setup_last: Instant,
     message: String,
     log_for: String,
     log_text: String,
@@ -487,6 +496,13 @@ impl App {
             prep_rx: None,
             prep_cmd: None,
             prep_paste: String::new(),
+            remote: setup::Remote::default(),
+            remote_rx: None,
+            setup_confirm: None,
+            setup_status: setup::Status::default(),
+            setup_running: setup::running_pid().is_some(),
+            setup_info: setup::info(),
+            setup_last: Instant::now() - Duration::from_secs(10),
             message: String::new(),
             log_for: "host".into(),
             log_text: String::new(),
@@ -557,6 +573,7 @@ impl App {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_setup(ctx);
         if let Some(rx) = &self.heavy_rx {
             if let Ok(h) = rx.try_recv() {
                 self.updated = h.updated;
@@ -1010,6 +1027,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(shell::OUTER)).show(ui, |ui| self.main_area(ui, &ctx));
         self.lightbox_modal(&ctx);
         self.confirm(&ctx);
+        self.setup_confirm_modal(&ctx);
     }
 }
 

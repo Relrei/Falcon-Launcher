@@ -144,12 +144,14 @@ pub fn check_all(paths: &HashMap<String, String>) -> Vec<Check> {
     out.push(d);
 
     // ---- 建てる道具(仕組みのパッケージ) ----
-    let tools: [(&str, &str, &str, &str, &[&str], How, bool); 5] = [
+    let tools: [(&str, &str, &str, &str, &[&str], How, bool); 7] = [
         ("git", "Git", "ソースを取ってくる", "git", &["--version"], How::Package { arch: "git", debian: "git", fedora: "git" }, false),
         ("git-lfs", "Git LFS", "Blender の建てた部品を取ってくる", "git", &["lfs", "version"], How::Package { arch: "git-lfs", debian: "git-lfs", fedora: "git-lfs" }, false),
         ("cmake", "CMake", "建ての設定", "cmake", &["--version"], How::Package { arch: "cmake", debian: "cmake", fedora: "cmake" }, false),
         ("gcc", "C++ のコンパイラー(GCC)", "GCC 11 以上(目安)", "gcc", &["-dumpfullversion"], How::Package { arch: "base-devel", debian: "build-essential", fedora: "gcc-c++ make" }, false),
+        ("python3", "Python 3", "Blender の部品を取る台本(make update)", "python3", &["--version"], How::Package { arch: "python", debian: "python3", fedora: "python3" }, false),
         ("ninja", "Ninja", "建てを速くする(無ければ make)", "ninja", &["--version"], How::Package { arch: "ninja", debian: "ninja-build", fedora: "ninja-build" }, true),
+        ("ccache", "ccache", "更新の後の建て直しを速くする", "ccache", &["--version"], How::Package { arch: "ccache", debian: "ccache", fedora: "ccache" }, true),
     ];
     for (key, name, need, cmd, args, how, optional) in tools {
         let mut c = mk(key, "建てる道具", name, need, how, false, optional);
@@ -217,14 +219,18 @@ pub fn check_all(paths: &HashMap<String, String>) -> Vec<Check> {
 
     // ---- 後の段 ----
     // 公開の置き場は Relrei/Falcon-Engine
-    let mut c = mk("source", "ソースと部品", "Falcon Engine のソースと Blender の部品", "GitHub から取る(make update で部品も取る)", How::Manual { url: "https://github.com/Relrei/Falcon-Engine" }, false, false);
+    // 取るのは下の「取って建てる」(setup.rs)。ここでは数に入れない(取る前でも「揃っています」になるように)
+    let mut c = mk("source", "ソースと部品", "Falcon Engine のソースと Blender の部品", "GitHub から取る(下の「取って建てる」)", How::Note, false, true);
     let src = crate::places::places().source.clone();
     if Path::new(&src).join(".git").exists() {
         c.state = State::Ok;
-        c.found = src;
+        c.found = match crate::setup::source_tag() {
+            Some(t) => format!("{t} · {src}"),
+            None => src,
+        };
     } else {
         c.state = State::Missing;
-        c.found = format!("git clone https://github.com/Relrei/Falcon-Engine.git '{src}' && cd '{src}' && make update");
+        c.found = format!("まだ取っていません(取る先: {src})");
     }
     out.push(c);
     out
