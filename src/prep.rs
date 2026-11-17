@@ -216,15 +216,15 @@ pub fn check_all(paths: &HashMap<String, String>) -> Vec<Check> {
     out.push(c);
 
     // ---- 後の段 ----
-    // 公開の置き場は Relrei/Falcon-Engine-DEMO
-    let mut c = mk("source", "ソースと部品", "Falcon Engine のソースと Blender の部品", "GitHub から取る(make update で部品も取る)", How::Manual { url: "https://github.com/Relrei/Falcon-Engine-DEMO" }, false, false);
+    // 公開の置き場は Relrei/Falcon-Engine
+    let mut c = mk("source", "ソースと部品", "Falcon Engine のソースと Blender の部品", "GitHub から取る(make update で部品も取る)", How::Manual { url: "https://github.com/Relrei/Falcon-Engine" }, false, false);
     let src = crate::places::places().source.clone();
     if Path::new(&src).join(".git").exists() {
         c.state = State::Ok;
         c.found = src;
     } else {
         c.state = State::Missing;
-        c.found = format!("git clone https://github.com/Relrei/Falcon-Engine-DEMO.git '{src}' && cd '{src}' && make update");
+        c.found = format!("git clone https://github.com/Relrei/Falcon-Engine.git '{src}' && cd '{src}' && make update");
     }
     out.push(c);
     out

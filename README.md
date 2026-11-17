@@ -1,6 +1,6 @@
 # Falcon Launcher
 
-[Falcon Engine](https://github.com/Relrei/Falcon-Engine-DEMO) と、手元の公式 Blender を起動するためのランチャーです(Linux)。
+[Falcon Engine](https://github.com/Relrei/Falcon-Engine) と、手元の公式 Blender を起動するためのランチャーです(Linux)。
 Falcon Engine が無くても、公式の Blender のランチャーとして使えます。
 
 ## できること
@@ -50,7 +50,7 @@ cargo build --release
 | `fonts` | 字体を探す所に足す所(`:` で区切る) | なし |
 
 <建てる場所>は、建てる準備の頁で決める場所です(既定は `~/.local/share/falcon-launcher/build`)。
-Falcon Engine の建て方は [Falcon Engine の docs/BUILD.md](https://github.com/Relrei/Falcon-Engine-DEMO/blob/main/docs/BUILD.md) にあります。
+Falcon Engine の建て方は [Falcon Engine の docs/BUILD.md](https://github.com/Relrei/Falcon-Engine/blob/main/docs/BUILD.md) にあります。
 
 ## 許諾
 
