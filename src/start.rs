@@ -116,8 +116,9 @@ impl App {
 
     /// 左の列に出す物: Falcon(v5・v4 の本線)と公式の Blender
     pub(super) fn left_groups(&self) -> Vec<(&'static str, Vec<Build>)> {
-        let mut falcon: Vec<Build> = self.builds.iter().filter(|b| b.kind == Kind::Main || b.key == "v5").cloned().collect();
-        falcon.sort_by_key(|b| b.key != "v5");
+        // 前の版(prev:<版>。更新の時に残した物)は今の版の後ろに
+        let mut falcon: Vec<Build> = self.builds.iter().filter(|b| b.kind == Kind::Main || b.key == "v5" || b.key.starts_with("prev:")).cloned().collect();
+        falcon.sort_by_key(|b| (b.key != "v5", b.key.starts_with("prev:")));
         let official: Vec<Build> = self.builds.iter().filter(|b| b.key.starts_with("official:")).cloned().collect();
         [("Falcon", falcon), ("公式の Blender", official)].into_iter().filter(|(_, v)| !v.is_empty()).collect()
     }
