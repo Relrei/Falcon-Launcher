@@ -79,6 +79,139 @@ pub struct Job {
     pub inbox_mtime: u64,
     /// このシーンだけの割り当て(無い物は一覧の全体の設定のまま)
     pub lim: Limits,
+    /// 写しの描き方(アドオンが写しを書いた時の値。手で足した物は空)
+    pub scene_rs: SceneRender,
+    /// このシーンだけ描き方を変える物(None はシーンのまま)。
+    /// アドオンから来た物は Blender で決める(entry.tsv の over_*)。手で足した物はランチャーで決める
+    pub rs: RenderOver,
+}
+
+/// 写しの描き方(entry.tsv の engine・samples・denoise・denoiser)
+#[derive(Clone, Default, PartialEq)]
+pub struct SceneRender {
+    /// render.engine(CYCLES・NEURAL_RENDERING・BLENDER_EEVEE_NEXT など。分からない時は空)
+    pub engine: String,
+    pub samples: Option<u32>,
+    pub denoise: Option<bool>,
+    pub denoiser: String,
+}
+
+impl SceneRender {
+    pub fn is_eevee(&self) -> bool {
+        self.engine.contains("EEVEE")
+    }
+    /// 予約.tsv の 19 列目(例「e=CYCLES,s=128,d=1,dn=OPTIX」、無ければ「-」)
+    fn key(&self) -> String {
+        let mut v = vec![];
+        if !self.engine.is_empty() { v.push(format!("e={}", self.engine)); }
+        if let Some(x) = self.samples { v.push(format!("s={x}")); }
+        if let Some(x) = self.denoise { v.push(format!("d={}", x as u8)); }
+        if !self.denoiser.is_empty() { v.push(format!("dn={}", self.denoiser)); }
+        if v.is_empty() { "-".into() } else { v.join(",") }
+    }
+    fn from_key(k: &str) -> Self {
+        let mut r = SceneRender::default();
+        for kv in k.split(',') {
+            match kv.split_once('=') {
+                Some(("e", x)) => r.engine = x.into(),
+                Some(("s", x)) => r.samples = x.parse().ok(),
+                Some(("d", x)) => r.denoise = Some(x == "1"),
+                Some(("dn", x)) => r.denoiser = x.into(),
+                _ => {}
+            }
+        }
+        r
+    }
+}
+
+/// シーンごとの描き方の上書き。None は「シーンのまま」
+#[derive(Clone, Default, PartialEq)]
+pub struct RenderOver {
+    pub samples: Option<u32>,
+    pub denoise: Option<bool>,
+    /// OPENIMAGEDENOISE・OPTIX・DLSS
+    pub denoiser: Option<String>,
+}
+
+/// 選べるデノイザー(値と出す名前)。DLSS は Falcon の版だけ
+pub fn denoisers(falcon: bool) -> Vec<(&'static str, &'static str)> {
+    let mut v = vec![("OPENIMAGEDENOISE", "OpenImageDenoise"), ("OPTIX", "OptiX")];
+    if falcon {
+        v.push(("DLSS", "DLSS"));
+    }
+    v
+}
+
+pub fn denoiser_name(k: &str) -> &str {
+    match k {
+        "OPENIMAGEDENOISE" => "OpenImageDenoise",
+        "OPTIX" => "OptiX",
+        "DLSS" => "DLSS",
+        "AUTO" => "自動",
+        x => x,
+    }
+}
+
+impl RenderOver {
+    pub fn is_empty(&self) -> bool {
+        *self == RenderOver::default()
+    }
+    /// 予約.tsv の 18 列目(例「s=64,d=1,dn=DLSS」、無ければ「-」)
+    fn key(&self) -> String {
+        let mut v = vec![];
+        if let Some(x) = self.samples { v.push(format!("s={x}")); }
+        if let Some(x) = self.denoise { v.push(format!("d={}", x as u8)); }
+        if let Some(x) = &self.denoiser { v.push(format!("dn={x}")); }
+        if v.is_empty() { "-".into() } else { v.join(",") }
+    }
+    fn from_key(k: &str) -> Self {
+        let mut r = RenderOver::default();
+        for kv in k.split(',') {
+            match kv.split_once('=') {
+                Some(("s", x)) => r.samples = x.parse().ok(),
+                Some(("d", x)) => r.denoise = Some(x == "1"),
+                Some(("dn", x)) if !x.is_empty() => r.denoiser = Some(x.into()),
+                _ => {}
+            }
+        }
+        r
+    }
+    /// 行に出す短い説明(上書きした物だけ)
+    pub fn text(&self) -> String {
+        let mut v = vec![];
+        if let Some(x) = self.samples { v.push(format!("{x} サンプル")); }
+        match (self.denoise, &self.denoiser) {
+            (Some(false), _) => v.push("デノイズ無し".into()),
+            (_, Some(d)) => v.push(denoiser_name(d).to_string()),
+            (Some(true), None) => v.push("デノイズ".into()),
+            _ => {}
+        }
+        v.join(" · ")
+    }
+    /// 描く時に --python-expr へ足す行(エンジンを見て、Cycles 系なら scene.cycles、EEVEE ならサンプル数だけ)
+    fn python(&self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+        let mut cy = String::new();
+        if let Some(n) = self.samples {
+            cy.push_str(&format!(" c.samples={n}\n"));
+        }
+        if let Some(d) = self.denoise {
+            cy.push_str(&format!(" c.use_denoising={}\n", if d { "True" } else { "False" }));
+        }
+        if let Some(d) = &self.denoiser {
+            // 選べない時(機器の設定が無いなど)は、シーンのデノイザーのまま描き、ログに残す
+            let d: String = d.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            cy.push_str(&format!(" try: c.denoiser='{d}'\n except Exception as x: print('Falcon Launcher: デノイザー {d} を選べませんでした:', x)\n"));
+        }
+        let mut s = format!("s=bpy.context.scene\ne=s.render.engine\nif e in ('CYCLES','NEURAL_RENDERING'):\n c=s.cycles\n{cy}");
+        if let Some(n) = self.samples {
+            s.push_str(&format!("elif 'EEVEE' in e:\n s.eevee.taa_render_samples={n}\n"));
+        }
+        s.push_str("print('Falcon Launcher: 描き方', e, getattr(s.cycles,'samples','') if hasattr(s,'cycles') else '', getattr(getattr(s,'cycles',None),'denoiser',''))\n");
+        s
+    }
 }
 
 /// シーンごとの割り当て。None は「全体と同じ」
@@ -268,6 +401,8 @@ pub fn load() -> Vec<Job> {
                 on: f[14] == "1",
                 inbox_mtime: f[15].parse().unwrap_or(0),
                 lim: f.get(16).map(|k| Limits::from_key(k)).unwrap_or_default(),
+                rs: f.get(17).map(|k| RenderOver::from_key(k)).unwrap_or_default(),
+                scene_rs: f.get(18).map(|k| SceneRender::from_key(k)).unwrap_or_default(),
             })
         })
         .collect()
@@ -280,7 +415,7 @@ pub fn save(jobs: &[Job]) {
         .map(|j| {
             let range = j.range.map(|(a, b, s)| format!("{a},{b},{s}")).unwrap_or_else(|| "-".into());
             format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 j.id,
                 j.blend.display(),
                 j.source.display(),
@@ -297,7 +432,9 @@ pub fn save(jobs: &[Job]) {
                 j.inbox,
                 if j.on { 1 } else { 0 },
                 j.inbox_mtime,
-                j.lim.key()
+                j.lim.key(),
+                j.rs.key(),
+                j.scene_rs.key()
             )
         })
         .collect();
@@ -446,7 +583,7 @@ impl Runner {
     pub fn add(&self, blend: PathBuf, b: &Build, range: Option<(i32, i32, i32)>) {
         self.edit(|jobs| {
             let id = next_id(jobs);
-            jobs.push(Job { id, blend: blend.clone(), source: blend, build: b.key.clone(), build_title: b.title.clone(), scene: String::new(), range, camera: String::new(), keep_output: false, on: true, state: JobState::Wait, progress: String::new(), out: PathBuf::new(), started: 0, ended: 0, inbox: String::new(), inbox_mtime: 0, lim: Limits::default() });
+            jobs.push(Job { id, blend: blend.clone(), source: blend, build: b.key.clone(), build_title: b.title.clone(), scene: String::new(), range, camera: String::new(), keep_output: false, on: true, state: JobState::Wait, progress: String::new(), out: PathBuf::new(), started: 0, ended: 0, inbox: String::new(), inbox_mtime: 0, lim: Limits::default(), scene_rs: SceneRender::default(), rs: RenderOver::default() });
         });
     }
 
@@ -486,13 +623,36 @@ impl Runner {
                 let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}\t"))).unwrap_or("").to_string();
                 let num = |k: &str, d: i32| get(k).parse().unwrap_or(d);
                 let range = Some((num("start", 1), num("end", 1), num("step", 1)));
+                let scene_rs = SceneRender {
+                    engine: get("engine"),
+                    samples: get("samples").parse().ok(),
+                    denoise: match get("denoise").as_str() {
+                        "1" => Some(true),
+                        "0" => Some(false),
+                        _ => None,
+                    },
+                    denoiser: get("denoiser"),
+                };
+                // Blender のアドオンで決めた、ランチャーで描く時だけの描き方
+                let rs = RenderOver {
+                    samples: get("over_samples").parse().ok(),
+                    denoise: match get("over_denoise").as_str() {
+                        "1" => Some(true),
+                        "0" => Some(false),
+                        _ => None,
+                    },
+                    denoiser: Some(get("over_denoiser")).filter(|d| !d.is_empty()),
+                };
                 if let Some(j) = jobs.iter_mut().find(|j| &j.inbox == name) {
+                    // 描き方はいつもアドオンの値(ランチャーでは変えない)
+                    j.rs = rs.clone();
                     if j.inbox_mtime != *mt {
                         // アドオンで範囲などを変えた・写しを取り直した
                         j.range = range;
                         j.camera = get("camera");
                         j.keep_output = get("keep_output") == "1";
                         j.scene = get("scene");
+                        j.scene_rs = scene_rs;
                         j.inbox_mtime = *mt;
                     }
                     continue;
@@ -520,6 +680,8 @@ impl Runner {
                     inbox: name.clone(),
                     inbox_mtime: *mt,
                     lim: Limits::default(),
+                    scene_rs,
+                    rs,
                 });
                 added += 1;
             }
@@ -790,6 +952,8 @@ fn run_one(job: &Job, builds: &[Build], s: &Settings, pid: &Arc<Mutex<Option<u32
         let cam = job.camera.replace('\\', "\\\\").replace('\'', "\\'");
         expr.push_str(&format!("c=bpy.data.objects.get('{cam}')\nif c: bpy.context.scene.camera=c\n"));
     }
+    // シーンごとの描き方(サンプル数・デノイザー)
+    expr.push_str(&job.rs.python());
     argv.extend(["--python-expr".into(), expr]);
     if s.threads > 0 {
         argv.extend(["-t".into(), s.threads.to_string()]);
@@ -884,4 +1048,22 @@ pub fn install_addon() -> Vec<String> {
     }
     done.sort();
     done
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// 描く時に足す Python を書き出す(FALCON_RS_OUT に置く。Blender で通るかは手で確かめる)
+    #[test]
+    fn render_over_python() {
+        let r = RenderOver { samples: Some(7), denoise: Some(true), denoiser: Some("DLSS".into()) };
+        let k = r.key();
+        assert!(RenderOver::from_key(&k) == r);
+        assert!(RenderOver::from_key("-").is_empty());
+        let sr = SceneRender { engine: "NEURAL_RENDERING".into(), samples: Some(128), denoise: Some(false), denoiser: "OPTIX".into() };
+        assert!(SceneRender::from_key(&sr.key()) == sr);
+        if let Ok(p) = std::env::var("FALCON_RS_OUT") {
+            std::fs::write(p, format!("import bpy\n{}", r.python())).unwrap();
+        }
+    }
 }

@@ -288,6 +288,8 @@ struct App {
     queue_query: String,
     queue_filter: u8,
     queue_sel: HashSet<u64>,
+    /// 右の列で描き方を見ている行
+    queue_focus: Option<u64>,
     /// ファイル構造で広げたフォルダと、読んだ中身
     fs_open: HashSet<PathBuf>,
     fs_cache: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
@@ -441,6 +443,7 @@ impl App {
             queue_query: String::new(),
             queue_filter: 0,
             queue_sel: HashSet::new(),
+            queue_focus: None,
             fs_open: HashSet::new(),
             fs_cache: HashMap::new(),
             page: "host".into(),

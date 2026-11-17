@@ -7,6 +7,7 @@ use super::*;
 use super::page::{bold, day_of, elide};
 use queue::JobState;
 
+mod render_panel;
 mod setup_page;
 
 pub(super) const RAIL_W: f32 = 68.0;
@@ -409,6 +410,11 @@ impl App {
                 ui.add_space(16.0);
                 self.home_filters(ui);
             });
+            return;
+        }
+        if self.view == View::Queue {
+            // レンダリングの一覧では、右の列を選んだシーンの描き方にする
+            self.render_panel(ui);
             return;
         }
         let cur = self.cur_build();

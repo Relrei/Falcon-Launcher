@@ -316,7 +316,7 @@ impl App {
 
     /// 選ぶ四角(押されたら true)
     /// 割り当ての 1 行: 入れると個別にする・数・全体の値
-    fn lim_row<T: egui::emath::Numeric>(ui: &mut egui::Ui, label: &str, v: &mut Option<T>, global: T, range: std::ops::RangeInclusive<T>, unit: &str, note: &str) {
+    pub(crate) fn lim_row<T: egui::emath::Numeric>(ui: &mut egui::Ui, label: &str, v: &mut Option<T>, global: T, range: std::ops::RangeInclusive<T>, unit: &str, note: &str) {
         let mut on = v.is_some();
         if ui.checkbox(&mut on, label).changed() {
             *v = if on { Some(global) } else { None };
@@ -354,6 +354,7 @@ impl App {
     fn job_table(&mut self, ui: &mut egui::Ui, w: f32, jobs: &[queue::Job], edit: &mut Vec<(u64, &'static str)>) {
         ui.style_mut().interaction.selectable_labels = false;
         let q = self.queue_query.trim().to_lowercase();
+        let focus = self.focused_job(jobs);
         let shown: Vec<(usize, &queue::Job)> = jobs
             .iter()
             .enumerate()
@@ -425,6 +426,14 @@ impl App {
                     p.rect_filled(r.shrink2(Vec2::new(0.0, 0.5)), cr, CARD.gamma_multiply(0.35));
                 }
                 let dim = |c: Color32| if j.on { c } else { c.gamma_multiply(0.45) };
+                // 右の列で描き方を見ている行(左に印)。名前の所を押すと選ぶ
+                if focus == Some(j.id) {
+                    p.rect_filled(Rect::from_min_size(r.min + Vec2::new(0.0, 8.0), Vec2::new(3.0, r.height() - 16.0)), CornerRadius::same(2), ACCENT);
+                }
+                let name_r = Rect::from_min_max(Pos2::new(r.left() + x_name, r.top()), Pos2::new(r.left() + x_prog, r.bottom()));
+                if ui.interact(name_r, ui.scope_id().with(("focus", j.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("押すと、右の列でこのシーンの描き方を変えられます").clicked() {
+                    self.queue_focus = Some(j.id);
+                }
                 if Self::check_box(ui, Rect::from_min_size(r.min, Vec2::new(c_chk, r.height())), sel, ui.scope_id().with(("chk", j.id))) && !self.queue_sel.remove(&j.id) {
                     self.queue_sel.insert(j.id);
                 }
@@ -445,11 +454,12 @@ impl App {
                 let title = if j.scene.is_empty() { j.name() } else { j.scene.clone() };
                 p.galley(Pos2::new(nx, r.top() + 13.0), elide(ui, &title, bold(14.5), dim(TEXT), nw), dim(TEXT));
                 let from = if j.inbox.is_empty() { format!("{}  ·  手で足した物", j.name()) } else { j.name() };
-                if j.lim.is_empty() {
+                let over = [j.rs.text(), j.lim.text()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" · ");
+                if over.is_empty() {
                     p.galley(Pos2::new(nx, r.top() + 36.0), elide(ui, &from, FontId::proportional(12.5), dim(FAINT), nw), dim(FAINT));
                 } else {
                     // 個別の割り当てがある時は、それを先に出す
-                    let lt = format!("{}  {}", I_SLIDERS, j.lim.text());
+                    let lt = format!("{}  {}", I_SLIDERS, over);
                     let g = elide(ui, &lt, FontId::proportional(12.5), dim(ACCENT_TEXT), nw);
                     let gw = g.size().x;
                     p.galley(Pos2::new(nx, r.top() + 36.0), g, dim(ACCENT_TEXT));
