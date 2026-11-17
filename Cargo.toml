@@ -1,0 +1,15 @@
+[package]
+name = "falcon-launcher"
+version = "0.5.0"
+edition = "2021"
+description = "Launcher for Falcon Engine and Blender (Linux)"
+license = "MIT"
+repository = "https://github.com/Relrei/Falcon-Launcher"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+egui_extras = { version = "0.37", default-features = false, features = ["image", "file"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[profile.release]
+opt-level = 3
