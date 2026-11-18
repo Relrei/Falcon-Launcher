@@ -1,6 +1,10 @@
 # Falcon Launcher
 
-[Falcon Engine](https://github.com/Relrei/Falcon-Engine) と、手元の公式 Blender を起動するためのランチャーです(Linux)。
+[Falcon Engine](https://github.com/Relrei/Falcon-Engine) を使う人を支えるための、Linux 用のソフトです。
+
+- Falcon Engine と、手元にある公式の Blender を、ここから起動できます。
+- 同梱のアドオンを使い、Blender でレンダリングしたいシーンや範囲を決めて送ると、シーンごとに分けて順にレンダリングできます。
+
 Falcon Engine が無くても、公式の Blender のランチャーとして使えます。
 
 ## できること
@@ -10,6 +14,7 @@ Falcon Engine が無くても、公式の Blender のランチャーとして使
 - **レンダリングの予約**: `.blend` を一覧に並べ、上から順にバックグラウンドで描きます。
   シーンごとに CPU のスレッド数・RAM の上限・VRAM の上限・優先度(nice)を決められます(決めていない物は全体の設定)。
 - **Blender との連携**: 同梱のアドオン「Falcon Launcher Link」を入れると、Blender の出力のプロパティの「ランチャーに登録」で予約の一覧へ送れます。
+  送る時に、そのシーンだけのサンプル数とデノイザー(OpenImageDenoise・OptiX。Falcon Engine では DLSS も)を、同じパネルで決められます。
 - **レンダリング結果**: 描いた絵と動画を組ごとに並べます。連番の絵は動画にまとめて見られます。
 - **取って建てる・更新**: 建てる準備の頁から、GitHub の Falcon Engine を取り、Blender の部品を取り、設定して建てます
   ([docs/BUILD.md](https://github.com/Relrei/Falcon-Engine/blob/main/docs/BUILD.md) と同じ手順。`nice -n 10` で、並びの数は頁で決めます)。
