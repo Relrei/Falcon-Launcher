@@ -7,7 +7,7 @@
 
 Falcon Engine が無くても、公式の Blender のランチャーとして使えます。
 
-## できること
+## 詳細
 
 - **起動**: 建てた Falcon Engine と、手元にある公式の Blender(`~/Applications`・`~/Downloads`・`~/.local/opt`・`/opt` の `blender-*`、`/usr/bin`・snap・Steam・flatpak)を見つけて、版を選んで起動します。
 - **続きから**: 最近開いた `.blend` を、使う版で開きます。
