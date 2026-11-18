@@ -1,6 +1,6 @@
 #!/bin/sh
 # Falcon Launcher を建てて、起動できるようにする。使い方: Falcon-Launcher の中で ./install.sh
-# 取ってくる所から: git clone https://github.com/Relrei/Falcon-Launcher.git && cd Falcon-Launcher && ./install.sh
+# 取ってくる所から: git clone --branch Falcon-Launcher-v0.1.0 https://github.com/Relrei/Falcon-Launcher.git && cd Falcon-Launcher && ./install.sh
 # ビルド済みは配らない。Rust(cargo)が無ければ、公式の rustup を入れるかを聞く。管理者の権限は使わない。
 set -eu
 

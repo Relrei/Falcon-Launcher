@@ -552,7 +552,7 @@ impl App {
                 let c = if self.main_branch_now == scan::MAIN_BRANCH { FAINT } else { WARN };
                 ui.label(RichText::new(format!("本体の木: {}", self.main_branch_now)).size(11.0).color(c));
             }
-            ui.label(RichText::new(format!("最後の見回り {}  ·  Falcon Launcher 0.5.0", when(self.scanned_at))).size(11.0).color(FAINT));
+            ui.label(RichText::new(format!("最後の見回り {}  ·  Falcon Launcher 0.1.0", when(self.scanned_at))).size(11.0).color(FAINT));
             ui.add_space(16.0);
         });
         if let Some(k) = pick {
@@ -1232,7 +1232,7 @@ impl App {
         // ランチャーについて
         Self::settings_card(ui, w, "ランチャーについて", "", |ui, iw| {
             Self::setting_row(ui, iw, "版", "", |ui| {
-                ui.label(RichText::new("Falcon Launcher 0.5.0 · Linux").size(13.5).color(TEXT));
+                ui.label(RichText::new("Falcon Launcher 0.1.0 · Linux").size(13.5).color(TEXT));
             });
             Self::setting_row(ui, iw, "ソース", "", |ui| Self::path_cell(ui, Path::new(env!("CARGO_MANIFEST_DIR"))));
             Self::setting_row(ui, iw, "ビルドの決まり", "", |ui| {
