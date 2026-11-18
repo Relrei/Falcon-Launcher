@@ -36,11 +36,11 @@ Falcon Engine が無くても、公式の Blender のランチャーとして使
 ## 建てる・起動する
 
 ```sh
-git clone https://github.com/Relrei/Falcon-Launcher.git
-cd Falcon-Launcher
-cargo build --release
-./target/release/falcon-launcher
+git clone https://github.com/Relrei/Falcon-Launcher.git && cd Falcon-Launcher && ./install.sh
 ```
+
+`install.sh` は、Rust(cargo)の有無を確かめ、無ければ公式の rustup で入れるかを聞きます。そのあとランチャーを建て、アプリのメニューへの登録を聞きます。管理者の権限は使いません。
+建てたら、ランチャーを開いて「建てる準備」の頁から Falcon Engine を建てます。
 
 ## 置き場の設定
 
