@@ -1,4 +1,4 @@
-//! 建てる準備: Falcon Engine を各自の PC で建てるのに要る物を確かめ、取り方を案内する。
+//! ビルドの準備: Falcon Engine を各自の PC でビルドするのに要る物を確かめ、取り方を案内する。
 //! SDK や Toolkit を入れるのをランチャーで手伝う(Linux は半分ほどがパッケージで済む。Windows は後で)。
 //! 今は Linux だけ。NVIDIA の物(CUDA・OptiX・DLSS)を自動で取ってくる形は、許諾を確かめてから足す
 //! (それまでは取りに行く頁を開き、置いた場所を選んでもらう)。パッケージは sudo が要るので、ランチャーは打たずに命令を写すだけ。
@@ -60,7 +60,7 @@ pub struct Check {
     pub how: How,
     /// 置いた場所を選べる(準備.tsv のキー)
     pub has_path: bool,
-    /// 無くても建てられる
+    /// 無くてもビルドできる
     pub optional: bool,
 }
 
@@ -102,12 +102,12 @@ pub fn package_command(how: &How) -> Option<String> {
     })
 }
 
-/// 既定の建てる場所
+/// 既定のビルドする場所
 pub fn default_build_dir() -> String {
     format!("{}/.local/share/falcon-launcher/build", std::env::var("HOME").unwrap_or_default())
 }
 
-/// 要る空き(目安)。この PC の 11-17 の大きさ: 歴史 2.6 GB・部品 2.4 GB・建て先 5.1 GB・控え 0.6 GB(1 回分)
+/// 要る空き(目安)。この PC の 11-17 の大きさ: 歴史 2.6 GB・部品 2.4 GB・ビルド先 5.1 GB・控え 0.6 GB(1 回分)
 pub const NEED_FREE_GB: f64 = 20.0;
 
 fn nvcc_path(paths: &HashMap<String, String>) -> Option<PathBuf> {
@@ -143,18 +143,18 @@ pub fn check_all(paths: &HashMap<String, String>) -> Vec<Check> {
     out.push(c);
     out.push(d);
 
-    // ---- 建てる道具(仕組みのパッケージ) ----
+    // ---- ビルドの道具(仕組みのパッケージ) ----
     let tools: [(&str, &str, &str, &str, &[&str], How, bool); 7] = [
         ("git", "Git", "ソースを取ってくる", "git", &["--version"], How::Package { arch: "git", debian: "git", fedora: "git" }, false),
-        ("git-lfs", "Git LFS", "Blender の建てた部品を取ってくる", "git", &["lfs", "version"], How::Package { arch: "git-lfs", debian: "git-lfs", fedora: "git-lfs" }, false),
-        ("cmake", "CMake", "建ての設定", "cmake", &["--version"], How::Package { arch: "cmake", debian: "cmake", fedora: "cmake" }, false),
+        ("git-lfs", "Git LFS", "Blender のビルド済みの部品を取ってくる", "git", &["lfs", "version"], How::Package { arch: "git-lfs", debian: "git-lfs", fedora: "git-lfs" }, false),
+        ("cmake", "CMake", "ビルドの設定", "cmake", &["--version"], How::Package { arch: "cmake", debian: "cmake", fedora: "cmake" }, false),
         ("gcc", "C++ のコンパイラー(GCC)", "GCC 11 以上(目安)", "gcc", &["-dumpfullversion"], How::Package { arch: "base-devel", debian: "build-essential", fedora: "gcc-c++ make" }, false),
         ("python3", "Python 3", "Blender の部品を取る台本(make update)", "python3", &["--version"], How::Package { arch: "python", debian: "python3", fedora: "python3" }, false),
-        ("ninja", "Ninja", "建てを速くする(無ければ make)", "ninja", &["--version"], How::Package { arch: "ninja", debian: "ninja-build", fedora: "ninja-build" }, true),
-        ("ccache", "ccache", "更新の後の建て直しを速くする", "ccache", &["--version"], How::Package { arch: "ccache", debian: "ccache", fedora: "ccache" }, true),
+        ("ninja", "Ninja", "ビルドを速くする(無ければ make)", "ninja", &["--version"], How::Package { arch: "ninja", debian: "ninja-build", fedora: "ninja-build" }, true),
+        ("ccache", "ccache", "更新の後の再ビルドを速くする", "ccache", &["--version"], How::Package { arch: "ccache", debian: "ccache", fedora: "ccache" }, true),
     ];
     for (key, name, need, cmd, args, how, optional) in tools {
-        let mut c = mk(key, "建てる道具", name, need, how, false, optional);
+        let mut c = mk(key, "ビルドの道具", name, need, how, false, optional);
         if let Some(v) = run(cmd, args) {
             let first = v.lines().next().unwrap_or("").to_string();
             c.state = if key == "gcc" && ver2(&first).0 < 11 { State::Warn } else { State::Ok };
@@ -164,7 +164,7 @@ pub fn check_all(paths: &HashMap<String, String>) -> Vec<Check> {
     }
 
     // ---- NVIDIA の SDK ----
-    let mut c = mk("cuda", "NVIDIA の SDK", "CUDA Toolkit", "12.8 以上(GPU の核を建てる)", How::Manual { url: "https://developer.nvidia.com/cuda-downloads" }, true, false);
+    let mut c = mk("cuda", "NVIDIA の SDK", "CUDA Toolkit", "12.8 以上(GPU の核をコンパイルする)", How::Manual { url: "https://developer.nvidia.com/cuda-downloads" }, true, false);
     if let Some(nvcc) = nvcc_path(paths) {
         let v = run(nvcc.to_str().unwrap_or("nvcc"), &["--version"]).unwrap_or_default();
         let rel = v.lines().find_map(|l| l.split("release ").nth(1)).map(|s| s.split(',').next().unwrap_or("").to_string()).unwrap_or_default();
@@ -200,9 +200,9 @@ pub fn check_all(paths: &HashMap<String, String>) -> Vec<Check> {
     }
     out.push(c);
 
-    // ---- 建てる場所 ----
+    // ---- ビルドする場所 ----
     let place = paths.get("build_dir").cloned().filter(|p| !p.is_empty()).unwrap_or_else(default_build_dir);
-    let mut c = mk("build_dir", "建てる場所", "建てる場所", "空き 20 GB 以上(ソース・部品・建て先・控え)", How::Place, true, false);
+    let mut c = mk("build_dir", "ビルドする場所", "ビルドする場所", "空き 20 GB 以上(ソース・部品・ビルド先・控え)", How::Place, true, false);
     // まだ無い場所は、在る一番近い親で空きを見る
     let mut probe = PathBuf::from(&place);
     while !probe.exists() {
@@ -219,8 +219,8 @@ pub fn check_all(paths: &HashMap<String, String>) -> Vec<Check> {
 
     // ---- 後の段 ----
     // 公開の置き場は Relrei/Falcon-Engine
-    // 取るのは下の「取って建てる」(setup.rs)。ここでは数に入れない(取る前でも「揃っています」になるように)
-    let mut c = mk("source", "ソースと部品", "Falcon Engine のソースと Blender の部品", "GitHub から取る(下の「取って建てる」)", How::Note, false, true);
+    // 取るのは下の「取得してビルド」(setup.rs)。ここでは数に入れない(取る前でも「揃っています」になるように)
+    let mut c = mk("source", "ソースと部品", "Falcon Engine のソースと Blender の部品", "GitHub から取る(下の「取得してビルド」)", How::Note, false, true);
     let src = crate::places::places().source.clone();
     if Path::new(&src).join(".git").exists() {
         c.state = State::Ok;

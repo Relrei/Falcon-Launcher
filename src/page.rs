@@ -2,7 +2,7 @@
 //! - 探す: 左に絞り込み、右にプロジェクトの行
 //! - プロジェクトのページ: 頭に名前と「起動する」、タブに 説明・ギャラリー・更新履歴・機能、右に細かい札
 //! - 機能: falcon_features.py の機能ごとの表(版は機能ごと)。試験のビルドと古い版は同じ表の切り替え
-//! - 更新履歴: 版とコミットと建てた記録を折りたたみの線で
+//! - 更新履歴: 版とコミットとビルドの記録を折りたたみの線で
 //! - ギャラリー: 今まで取った絵・動画と、説明つきの絵
 use super::*;
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
@@ -70,18 +70,18 @@ fn kebab(ui: &mut egui::Ui, rect: Rect, salt: &str, round: bool, add: impl FnOnc
     egui::containers::menu::MenuButton::from_button(b).ui(&mut child, add);
 }
 
-/// 機能の札の字と色: 動 = 起動できる・建 = ビルド中・失 = 失敗・未 = 未建て・古 = 古い版
+/// 機能の札の字と色: 動 = 起動できる・ビ = ビルド中・失 = 失敗・未 = 未ビルド・古 = 古い版
 fn state_badge(b: &Build) -> (&'static str, Color32, String) {
     if b.building.is_some() {
-        ("建", ORANGE, "ビルド中".into())
+        ("ビ", ORANGE, "ビルド中".into())
     } else if b.kind == Kind::Old && b.key != "v5" && !b.key.starts_with("official:") {
         ("古", MUTED, "古い版".into())
     } else if b.ok == Some(false) {
-        ("失", ERR, format!("建てて失敗 {} 件", b.fails))
+        ("失", ERR, format!("ビルドに失敗 {} 件", b.fails))
     } else if b.has_bin {
         ("動", OK, "起動できる".into())
     } else {
-        ("未", FAINT, "まだ建てていない".into())
+        ("未", FAINT, "まだビルドしていない".into())
     }
 }
 
@@ -274,15 +274,27 @@ impl App {
     }
 
     pub(super) fn home_list(&mut self, ui: &mut egui::Ui, w: f32, actions: &mut Vec<Action>) {
+        let tiles_before = self.look.build_tiles;
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.query).hint_text(format!("{I_SEARCH}  名前・枝・説明で探す")).desired_width(w - 190.0).margin(egui::Margin::symmetric(12, 8)));
+            ui.add(egui::TextEdit::singleline(&mut self.query).hint_text(format!("{I_SEARCH}  名前・枝・説明で探す")).desired_width(w - 252.0).margin(egui::Margin::symmetric(12, 8)));
             let text = |s: Sort| if s == Sort::New { "並び: 新しい順" } else { "並び: 名前順" };
             egui::ComboBox::from_id_salt("sort").selected_text(text(self.sort)).width(140.0).show_ui(ui, |ui| {
                 for s in [Sort::New, Sort::Name] {
                     ui.selectable_value(&mut self.sort, s, text(s));
                 }
             });
+            // 行の一覧とカードの並び
+            for (tiles, icon, tip) in [(false, I_LIST, "行の一覧"), (true, I_TILES, "カードの並び")] {
+                let on = self.look.build_tiles == tiles;
+                let b = egui::Button::new(RichText::new(icon).size(14.0).color(if on { ACCENT_TEXT } else { MUTED })).fill(if on { ACCENT.gamma_multiply(0.16) } else { CARD }).stroke(Stroke::new(1.0, if on { ACCENT.gamma_multiply(0.6) } else { LINE })).corner_radius(CornerRadius::same(9)).min_size(Vec2::splat(34.0));
+                if ui.add(b).on_hover_text(tip).clicked() {
+                    self.look.build_tiles = tiles;
+                }
+            }
         });
+        if self.look.build_tiles != tiles_before {
+            self.look.save();
+        }
         ui.add_space(10.0);
         let tab = self.tab;
         let favs = self.favorites.clone();
@@ -297,9 +309,74 @@ impl App {
             ui.add_space(20.0);
             ui.label(RichText::new("当てはまる物がありません。").color(FAINT));
         }
+        if self.look.build_tiles {
+            let gap = 12.0;
+            let cols = ((w + gap) / (250.0 + gap)).floor().max(1.0) as usize;
+            let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
+            for row in list.chunks(cols) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for b in row {
+                        self.home_tile(ui, b, cw, actions);
+                    }
+                });
+                ui.add_space(gap);
+            }
+            return;
+        }
         for b in &list {
             self.home_row(ui, b, w, actions);
             ui.add_space(10.0);
+        }
+    }
+
+    /// カードの並びの 1 枚(絵・名前・説明・札・大きさと更新・起動する)
+    fn home_tile(&mut self, ui: &mut egui::Ui, b: &Build, w: f32, actions: &mut Vec<Action>) {
+        let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 232.0), Sense::click());
+        if !ui.is_rect_visible(r) {
+            return;
+        }
+        let p = ui.painter().clone();
+        p.rect_filled(r, CornerRadius::same(14), if resp.hovered() { CARD_HI } else { CARD });
+        if resp.clicked() {
+            actions.push(Action::Open(b.key.clone()));
+        }
+        let pad = 14.0;
+        let x = r.left() + pad;
+        let text_w = w - pad * 2.0;
+        paint_icon(ui, Rect::from_min_size(r.min + Vec2::splat(pad), Vec2::splat(64.0)), b);
+        // 絵の右に大きさと更新
+        let rx = r.right() - pad;
+        if let Some(n) = self.size_of(b) {
+            p.text(Pos2::new(rx, r.top() + pad + 14.0), Align2::RIGHT_CENTER, format!("{I_HDD}  {}", gb(n)), bold(13.0), TEXT);
+        }
+        if let Some(t) = self.updated.get(&b.key) {
+            p.text(Pos2::new(rx, r.top() + pad + 38.0), Align2::RIGHT_CENTER, format!("{I_CLOCK}  更新 {}", ago(*t)), FontId::proportional(12.0), FAINT);
+        }
+        let ty = r.top() + pad + 64.0 + 10.0;
+        p.galley(Pos2::new(x, ty), elide(ui, &b.title, bold(17.0), TEXT, text_w), TEXT);
+        let what = if b.what.is_empty() { "説明はまだありません" } else { b.what.as_str() };
+        p.galley(Pos2::new(x, ty + 28.0), elide(ui, what, FontId::proportional(12.5), MUTED, text_w), MUTED);
+        let mut cx = x;
+        let (_, color, state) = state_badge(b);
+        for (t, c) in [(b.category.to_string(), MUTED), (state, color)] {
+            let room = r.right() - pad - cx;
+            if room < 40.0 {
+                break;
+            }
+            cx = paint_chip(ui, Pos2::new(cx, ty + 52.0), &t, c, room.min(160.0)).right() + 6.0;
+        }
+        let br = Rect::from_min_size(Pos2::new(x, r.bottom() - pad - 34.0), Vec2::new(text_w, 34.0));
+        if b.building.is_some() {
+            if place_fill(ui, br, true, button(RichText::new(format!("{I_LOG}  ログ")).color(TEXT), false)).clicked() {
+                actions.push(Action::ShowLog(b.key.clone()));
+            }
+        } else if b.launchable() {
+            if place_fill(ui, br, true, green_button(format!("{I_PLAY}  起動する"))).clicked() {
+                actions.push(Action::Launch(b.key.clone()));
+            }
+        } else if place_fill(ui, br, true, button(RichText::new(format!("{I_BUILD}  ビルドする")).color(TEXT), false)).clicked() {
+            actions.push(Action::Build(b.key.clone()));
         }
     }
 
@@ -351,7 +428,7 @@ impl App {
             if place_fill(ui, br, true, green_button(format!("{I_PLAY}  起動する"))).clicked() {
                 actions.push(Action::Launch(b.key.clone()));
             }
-        } else if place_fill(ui, br, true, button(RichText::new(format!("{I_BUILD}  建てる")).color(TEXT), false)).clicked() {
+        } else if place_fill(ui, br, true, button(RichText::new(format!("{I_BUILD}  ビルドする")).color(TEXT), false)).clicked() {
             actions.push(Action::Build(b.key.clone()));
         }
     }
@@ -428,7 +505,7 @@ impl App {
                 row(I_LICENSE, "ライセンス", "GPL-2.0-or-later".into());
             }
             row(I_CLOCK, "更新", self.updated.get(&b.key).map(|t| ago(*t)).unwrap_or_default());
-            row(I_CAL, "建てた", if b.built_ts > 0 { ago(b.built_ts) } else { String::new() });
+            row(I_CAL, "ビルドした日", if b.built_ts > 0 { ago(b.built_ts) } else { String::new() });
             row(I_HDD, "大きさ", self.size_of(b).map(gb).unwrap_or_default());
             row(I_BRANCH, "枝", b.branch.clone());
             row(I_COMMIT_SMALL, "hash", b.hash.clone());
@@ -636,7 +713,7 @@ impl App {
         let mut page = self.page_no("rows").min(pages - 1);
         let (x_cat, x_date, x_size) = (w - 400.0, w - 300.0, w - 196.0);
         Self::table_frame(ui, w, |ui| {
-            Self::table_head(ui, w, &[(62.0, "ビルド"), (x_cat, "分け方"), (x_date, "建てた"), (x_size, "大きさ")]);
+            Self::table_head(ui, w, &[(62.0, "ビルド"), (x_cat, "分け方"), (x_date, "ビルドした日"), (x_size, "大きさ")]);
             for b in list.iter().skip(page * ROWS_PER_PAGE).take(ROWS_PER_PAGE) {
                 let (r, resp) = Self::table_row(ui, w, 64.0, true);
                 if resp.clicked() {
@@ -664,7 +741,7 @@ impl App {
                     if Self::green_play(ui, act, "起動する") {
                         actions.push(Action::Launch(b.key.clone()));
                     }
-                } else if b.kind == Kind::Test && place_fill(ui, act, true, egui::Button::new(RichText::new(I_BUILD).size(14.0).color(MUTED)).frame(false)).on_hover_text("建てる").clicked() {
+                } else if b.kind == Kind::Test && place_fill(ui, act, true, egui::Button::new(RichText::new(I_BUILD).size(14.0).color(MUTED)).frame(false)).on_hover_text("ビルドする").clicked() {
                     actions.push(Action::Build(b.key.clone()));
                 }
                 let more = Rect::from_min_size(Pos2::new(r.right() - 40.0, r.center().y - 16.0), Vec2::new(34.0, 32.0));
@@ -679,7 +756,7 @@ impl App {
                     if ui.add_enabled(b.dir.join("build.log").is_file(), plain_item(format!("{I_LOG}  ビルドのログ"))).clicked() {
                         actions.push(Action::ShowLog(b.key.clone()));
                     }
-                    if b.kind == Kind::Test && ui.add_enabled(b.building.is_none(), plain_item(format!("{I_BUILD}  {}", if b.has_bin { "建て直す" } else { "建てる" }))).clicked() {
+                    if b.kind == Kind::Test && ui.add_enabled(b.building.is_none(), plain_item(format!("{I_BUILD}  {}", if b.has_bin { "ビルドし直す" } else { "ビルドする" }))).clicked() {
                         actions.push(Action::Build(b.key.clone()));
                     }
                 });
@@ -795,7 +872,7 @@ impl App {
             ChangeKind::Version => LINK,
             ChangeKind::Merge | ChangeKind::Commit => ORANGE,
         };
-        // 右の「起動する」(今建っている物の行だけ)
+        // 右の「起動する」(今ビルド済みの物の行だけ)
         let current = c.kind == ChangeKind::Built && c.ok && b.launchable();
         let right_w = if current { 110.0 } else { 0.0 };
         if current {
@@ -887,13 +964,39 @@ impl App {
 
     /// 小さな絵を枠に描く。引き伸ばさない。
     /// cover = true: 枠いっぱいに切り出す(比べの絵は左上の 1 枚)。false: 全部を枠の中に収める
+    /// 絵の小さな絵の URI。ask なら、まだ無い時に作るよう頼む
+    pub(super) fn thumb_uri(&mut self, m: &Media, ask: bool) -> Option<String> {
+        let pending = !m.frames.is_empty() && !m.path.is_file();
+        let (src, video) = if pending { (m.frames[0].clone(), false) } else { (m.path.clone(), m.video) };
+        let t = if ask { self.thumb(&src, video) } else { self.thumb_done.lock().ok().and_then(|d| d.get(&src).cloned()).flatten() };
+        t.map(|t| format!("file://{}", t.display()))
+    }
+
+    /// 画面のすぐ外の絵を、前もって読んでおく(小さな絵を作り、控えに載せる。描かない)
+    pub(super) fn prefetch_thumb(&mut self, ctx: &egui::Context, m: &Media, size: Vec2) {
+        if let Some(uri) = self.thumb_uri(m, true) {
+            let _ = egui::Image::new(uri).load_for_size(ctx, size);
+        }
+    }
+
+    /// ライブラリの絵のうち、遠くなった物(この前の回に残すと決めなかった物)を控えから外す。
+    /// ライブラリを描いていない時は全部外す(App::ui から)
+    pub(super) fn sweep_gallery_tex(&mut self, ctx: &egui::Context) {
+        let frame = ctx.cumulative_frame_nr();
+        self.gallery_drawn = frame;
+        let old: Vec<String> = self.gallery_tex.iter().filter(|(_, f)| **f + 1 < frame).map(|(u, _)| u.clone()).collect();
+        for u in old {
+            ctx.forget_image(&u);
+            self.gallery_tex.remove(&u);
+        }
+    }
+
     pub(super) fn paint_thumb(&mut self, ui: &mut egui::Ui, r: Rect, m: &Media, cr: CornerRadius, cover: bool) {
         let painter = ui.painter().clone();
         painter.rect_filled(r, cr, BG);
         let pending = !m.frames.is_empty() && !m.path.is_file();
-        let (src, video) = if pending { (m.frames[0].clone(), false) } else { (m.path.clone(), m.video) };
-        let loaded = self.thumb(&src, video).and_then(|t| {
-            let img = egui::Image::new(format!("file://{}", t.display()));
+        let loaded = self.thumb_uri(m, true).and_then(|uri| {
+            let img = egui::Image::new(uri);
             let size = img.load_for_size(ui.ctx(), r.size()).ok().and_then(|p| p.size())?;
             Some((img, size))
         });
@@ -933,8 +1036,21 @@ impl App {
         }
     }
 
+    /// 拡大表示を閉じた時・絵を替えた時の片付け(動画を止め、読んだ絵を控えから外す)
+    fn lightbox_release(&mut self, ctx: &egui::Context, keep: Option<&str>) {
+        if self.lightbox_uri.as_deref() != keep {
+            if let Some(u) = self.lightbox_uri.take() {
+                ctx.forget_image(&u);
+            }
+        }
+    }
+
     pub(super) fn lightbox_modal(&mut self, ctx: &egui::Context) {
-        let Some((items, mut i, dir)) = self.lightbox.clone() else { return };
+        let Some((items, mut i, dir)) = self.lightbox.clone() else {
+            self.player = None;
+            self.lightbox_release(ctx, None);
+            return;
+        };
         if items.is_empty() {
             self.lightbox = None;
             return;
@@ -947,23 +1063,257 @@ impl App {
             i = (i + n - 1) % n;
         }
         let m = items[i.min(n - 1)].clone();
+        // 絵が替わったら、拡大と移動を元に戻す
+        if self.lb_item.as_ref() != Some(&m.path) {
+            self.lb_item = Some(m.path.clone());
+            self.lb_zoom = 0.0;
+            self.lb_pan = Vec2::ZERO;
+            self.lb_scrub = None;
+        }
         let screen = ctx.content_rect().size();
-        let (mw, mh) = ((screen.x - 120.0).max(300.0), (screen.y - 220.0).max(200.0));
+        let ready = m.path.is_file();
+        let is_video = m.video && ready;
+        // 動画は下に再生バーと操作の列を置くので、その分だけ低く
+        let (mw, mh) = ((screen.x - 120.0).max(300.0), (screen.y - if is_video { 270.0 } else { 220.0 }).max(200.0));
+        // 「フォルダ」はライブラリから開くと空なので、その絵の置き場にする
+        let orig_dir = dir.clone();
+        let dir = if dir.as_os_str().is_empty() { m.path.parent().map(Path::to_path_buf).unwrap_or_default() } else { dir };
+        // 動画は ffmpeg でほどいて見せる(egui は動画を読めず、赤い三角になっていた)
+        if is_video {
+            if self.player.as_ref().is_none_or(|p| p.path != m.path) {
+                self.player = None;
+                match video::Player::open(&m.path, Vec2::new(mw, mh)) {
+                    Ok(p) => self.player = Some(p),
+                    Err(e) => self.message = e,
+                }
+            }
+            self.lightbox_release(ctx, None);
+        } else {
+            self.player = None;
+            let uri = format!("file://{}", m.path.display());
+            self.lightbox_release(ctx, Some(&uri));
+            if ready {
+                self.lightbox_uri = Some(uri);
+            }
+        }
+        // 動画のキー(Blender の再生に寄せる): スペース 再生・止める / , . 1 コマ / [ ] 倍速
+        if let Some(p) = self.player.as_ref().filter(|_| is_video) {
+            // ボタンへ届く前に受け取る(スペースが押したボタンにも効いて、2 回切り替わらないように)
+            let (space, back, fwd, slower, faster) = ctx.input_mut(|s| {
+                let none = egui::Modifiers::NONE;
+                (s.consume_key(none, egui::Key::Space), s.consume_key(none, egui::Key::Comma), s.consume_key(none, egui::Key::Period), s.consume_key(none, egui::Key::OpenBracket), s.consume_key(none, egui::Key::CloseBracket))
+            });
+            if space {
+                p.toggle();
+            }
+            if back {
+                p.step(-1);
+            }
+            if fwd {
+                p.step(1);
+            }
+            let cur = video::SPEEDS.iter().position(|s| (*s - p.speed()).abs() < 0.01).unwrap_or(2);
+            if slower && cur > 0 {
+                p.set_speed(video::SPEEDS[cur - 1]);
+            }
+            if faster && cur + 1 < video::SPEEDS.len() {
+                p.set_speed(video::SPEEDS[cur + 1]);
+            }
+        }
+        // 見せる物の元の大きさ(拡大の基準)とテクスチャ
+        let (content, tex_id): (Option<Vec2>, Option<egui::TextureId>) = if !ready {
+            (None, None)
+        } else if is_video {
+            match self.player.as_mut() {
+                Some(p) => {
+                    let src = Vec2::new(p.src[0] as f32, p.src[1] as f32);
+                    (Some(src), p.texture(ctx).map(|t| t.id()))
+                }
+                None => (None, None),
+            }
+        } else {
+            match egui::Image::new(format!("file://{}", m.path.display())).load_for_size(ctx, Vec2::new(mw, mh)) {
+                Ok(egui::load::TexturePoll::Ready { texture }) => (Some(texture.size), Some(texture.id)),
+                _ => (None, None),
+            }
+        };
+        let fit = content.map(|c| (mw / c.x).min(mh / c.y)).unwrap_or(1.0);
         let mut close = false;
         let mut outside = None;
+        let mut toggle = false;
+        let vinfo = self.player.as_ref().filter(|_| is_video).map(|p| (p.paused(), p.position(), p.duration, p.fps, p.speed(), p.error()));
         let resp = egui::Modal::new(egui::Id::unique("falcon-launcher-lightbox")).show(ctx, |ui| {
-            ui.add(egui::Image::new(format!("file://{}", m.path.display())).fit_to_exact_size(Vec2::new(mw, mh)).maintain_aspect_ratio(true).corner_radius(CornerRadius::same(6)));
+            // ---- 絵の枠: ホイールで拡大(マウスの所を中心に)・ドラッグで動かす・ダブルクリックか Home で全体 ----
+            let (area, aresp) = ui.allocate_exact_size(Vec2::new(mw, mh), Sense::click_and_drag());
+            let painter = ui.painter_at(area);
+            painter.rect_filled(area, CornerRadius::same(6), Color32::from_black_alpha(90));
+            let mut scale = if self.lb_zoom > 0.0 { self.lb_zoom } else { fit };
+            if content.is_some() {
+                if aresp.hovered() {
+                    let dy = ui.input(|s| s.smooth_scroll_delta.y);
+                    if dy != 0.0 {
+                        // ホイール 1 回で 1.25 倍(Blender と同じくらい。1 回 ≒ 112 点)
+                        let new = (scale * (dy * 0.002).exp()).clamp(fit.min(1.0) * 0.1, 32.0);
+                        if let Some(at) = aresp.hover_pos() {
+                            // マウスの下の点がずれないように
+                            let rel = at - (area.center() + self.lb_pan);
+                            self.lb_pan = at - area.center() - rel * (new / scale);
+                        }
+                        scale = new;
+                        self.lb_zoom = new;
+                    }
+                }
+                if aresp.dragged() {
+                    if self.lb_zoom == 0.0 {
+                        self.lb_zoom = scale;
+                    }
+                    self.lb_pan += aresp.drag_delta();
+                }
+                let (home, one) = ui.input(|s| (s.key_pressed(egui::Key::Home) || s.key_pressed(egui::Key::F), s.key_pressed(egui::Key::Num1)));
+                if aresp.double_clicked() || home {
+                    self.lb_zoom = 0.0;
+                    self.lb_pan = Vec2::ZERO;
+                    scale = fit;
+                }
+                if one {
+                    // 等倍(元の 1 画素を画面の 1 画素に)
+                    scale = 1.0 / ui.ctx().pixels_per_point();
+                    self.lb_zoom = scale;
+                }
+                if self.lb_zoom == 0.0 {
+                    self.lb_pan = Vec2::ZERO;
+                }
+            }
+            if let Some(p) = self.player.as_ref().filter(|_| is_video) {
+                p.set_zoomed(scale > fit * 1.05);
+            }
+            if !ready {
+                let text = if m.frames.is_empty() { "ファイルが見つかりません" } else { "連番を動画にしています…(できたら見られます)" };
+                painter.text(area.center(), Align2::CENTER_CENTER, text, FontId::proportional(15.0), MUTED);
+            } else if let Some(e) = vinfo.as_ref().and_then(|v| v.5.clone()) {
+                painter.text(area.center(), Align2::CENTER_CENTER, e, FontId::proportional(14.0), ERR);
+            } else if let (Some(c), Some(id)) = (content, tex_id) {
+                let r = Rect::from_center_size(area.center() + self.lb_pan, c * scale);
+                painter.image(id, r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                // 左上に倍率(元の画素に対して)
+                let pct = scale * ui.ctx().pixels_per_point() * 100.0;
+                let label = if self.lb_zoom == 0.0 { format!("全体 · {pct:.0}%") } else { format!("{pct:.0}%") };
+                let g = painter.layout_no_wrap(label, FontId::proportional(11.5), TEXT);
+                let br = Rect::from_min_size(area.min + Vec2::new(8.0, 8.0), g.size() + Vec2::new(12.0, 6.0));
+                painter.rect_filled(br, CornerRadius::same(4), Color32::from_black_alpha(170));
+                painter.galley(br.min + Vec2::new(6.0, 3.0), g, TEXT);
+                let tip = "ホイールで拡大・縮小 / ドラッグで動かす / ダブルクリックか Home で全体 / 1 で等倍";
+                aresp.on_hover_text_at_pointer(tip);
+            } else {
+                painter.text(area.center(), Align2::CENTER_CENTER, if is_video { "動画を読んでいます…" } else { "絵を読んでいます…" }, FontId::proportional(14.0), MUTED);
+            }
+            // ---- 動画: 再生バーと操作の列 ----
+            if let Some((paused, pos, duration, fps, speed, _)) = vinfo {
+                ui.add_space(8.0);
+                let shown = self.lb_scrub.unwrap_or(pos);
+                let (br, bresp) = ui.allocate_exact_size(Vec2::new(mw, 22.0), Sense::click_and_drag());
+                let p = ui.painter();
+                let track = Rect::from_center_size(br.center(), Vec2::new(br.width() - 16.0, 6.0));
+                let frac = if duration > 0.0 { (shown / duration).clamp(0.0, 1.0) as f32 } else { 0.0 };
+                p.rect_filled(track, CornerRadius::same(3), CARD_HI);
+                p.rect_filled(Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * frac, track.bottom())), CornerRadius::same(3), ACCENT);
+                let hx = track.left() + track.width() * frac;
+                p.circle_filled(Pos2::new(hx, track.center().y), if bresp.hovered() || bresp.dragged() { 8.0 } else { 6.5 }, TEXT);
+                let at_t = |x: f32| ((x - track.left()) / track.width()).clamp(0.0, 1.0) as f64 * duration;
+                if let Some(pp) = bresp.hover_pos() {
+                    let t = at_t(pp.x);
+                    bresp.clone().on_hover_text_at_pointer(format!("{}  ·  コマ {}", clock(t), (t * fps as f64).round() as i64 + 1));
+                }
+                if duration > 0.0 {
+                    if let Some(pp) = bresp.interact_pointer_pos().filter(|_| bresp.is_pointer_button_down_on()) {
+                        let t = at_t(pp.x);
+                        // ドラッグ中は 0.08 秒おきに飛ぶ(ffmpeg を起こし直すので間引く)
+                        if self.lb_scrub_at.elapsed() > Duration::from_millis(80) {
+                            if let Some(pl) = &self.player {
+                                pl.seek(t);
+                            }
+                            self.lb_scrub_at = Instant::now();
+                        }
+                        self.lb_scrub = Some(t);
+                    }
+                    if bresp.drag_stopped() || bresp.clicked() {
+                        // 押して離すのが 1 回の描き直しの間に起きた時は、離した所で飛ぶ
+                        let t = self.lb_scrub.or_else(|| bresp.interact_pointer_pos().map(|pp| at_t(pp.x)));
+                        if let (Some(pl), Some(t)) = (&self.player, t) {
+                            pl.seek(t);
+                        }
+                        self.lb_scrub = None;
+                    }
+                }
+                ui.add_space(4.0);
+                // 各枠は決まった幅:
+                // ボタンの字や時刻・コマ番号の桁が変わっても、右の物がずれないように
+                let mono = FontId::monospace(12.5);
+                let frames_total = (duration * fps as f64).round() as i64;
+                let time_text = format!("{} / {}", clock(shown), clock(duration));
+                let frame_text = format!("コマ {} / {frames_total}", (shown * fps as f64).round() as i64 + 1);
+                // 一番長くなる時(全体と同じ桁)の幅
+                let widest = |t: String| ui.painter().layout_no_wrap(t, mono.clone(), TEXT).size().x + 4.0;
+                let time_w = widest(format!("{} / {}", clock(duration), clock(duration)));
+                let frame_w = widest(format!("コマ {frames_total} / {frames_total}"));
+                let fixed = |ui: &mut egui::Ui, w: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+                    ui.allocate_ui_with_layout(Vec2::new(w, 32.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(w);
+                        add(ui);
+                    });
+                };
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let small = |t: &str| button(RichText::new(t).color(TEXT), false).min_size(Vec2::new(36.0, 32.0));
+                    if ui.add(small("\u{f048}")).on_hover_text("1 コマ戻る( , )").clicked() {
+                        if let Some(pl) = &self.player {
+                            pl.step(-1);
+                        }
+                    }
+                    let play = button(RichText::new(if paused { format!("{I_PLAY}  再生") } else { "❚❚  止める".to_string() }).color(TEXT), false).min_size(Vec2::new(96.0, 32.0));
+                    if ui.add(play).on_hover_text("スペースのキーでも切り替えられます").clicked() {
+                        toggle = true;
+                    }
+                    if ui.add(small("\u{f051}")).on_hover_text("1 コマ進む( . )").clicked() {
+                        if let Some(pl) = &self.player {
+                            pl.step(1);
+                        }
+                    }
+                    ui.add_space(8.0);
+                    fixed(ui, time_w, &mut |ui| {
+                        ui.label(RichText::new(&time_text).font(mono.clone()).color(TEXT));
+                    });
+                    fixed(ui, frame_w, &mut |ui| {
+                        ui.label(RichText::new(&frame_text).font(mono.clone()).color(MUTED));
+                    });
+                    ui.add_space(8.0);
+                    // 倍速
+                    let text = |s: f32| if s == 1.0 { "等速 1×".to_string() } else { format!("{s}×") };
+                    egui::ComboBox::from_id_salt("lightbox-speed").selected_text(text(speed)).width(84.0).show_ui(ui, |ui| {
+                        for s in video::SPEEDS {
+                            if ui.selectable_label((s - speed).abs() < 0.01, text(s)).clicked() {
+                                if let Some(pl) = &self.player {
+                                    pl.set_speed(s);
+                                }
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("[ と ] のキーでも変えられます");
+                    ui.label(RichText::new(format!("{fps:.0} fps · 繰り返し · 音なし")).size(12.0).color(FAINT));
+                });
+            }
             ui.add_space(6.0);
             if !m.caption.is_empty() {
                 ui.add(egui::Label::new(RichText::new(&m.caption).size(14.0).color(TEXT)).wrap());
             }
             ui.label(RichText::new(m.path.display().to_string()).family(egui::FontFamily::Monospace).size(11.5).color(FAINT));
             ui.horizontal(|ui| {
-                if ui.add_enabled(n > 1, button(RichText::new(I_LEFT).color(TEXT), false)).clicked() {
+                if ui.add_enabled(n > 1, button(RichText::new(I_LEFT).color(TEXT), false)).on_hover_text("前の物(←)").clicked() {
                     i = (i + n - 1) % n;
                 }
                 ui.label(RichText::new(format!("{} / {n}", i + 1)).size(12.5).color(MUTED));
-                if ui.add_enabled(n > 1, button(RichText::new(I_RIGHT).color(TEXT), false)).clicked() {
+                if ui.add_enabled(n > 1, button(RichText::new(I_RIGHT).color(TEXT), false)).on_hover_text("次の物(→)").clicked() {
                     i = (i + 1) % n;
                 }
                 ui.add_space(12.0);
@@ -978,9 +1328,29 @@ impl App {
                 }
             });
         });
+        if toggle {
+            if let Some(p) = &self.player {
+                p.toggle();
+            }
+        }
         if let Some(p) = outside {
+            // 外で開く時は、ランチャーの中の再生を止める
+            if let Some(pl) = &self.player {
+                pl.pause();
+            }
             self.apply(vec![Action::Play(p)]);
         }
-        self.lightbox = if close || resp.should_close() { None } else { Some((items, i, dir)) };
+        self.lightbox = if close || resp.should_close() { None } else { Some((items, i, orig_dir)) };
+        if self.lightbox.is_none() {
+            self.player = None;
+            self.lb_item = None;
+            self.lightbox_release(ctx, None);
+        }
     }
+}
+
+/// 「1:05.3」の形の時刻
+fn clock(t: f64) -> String {
+    let t = t.max(0.0);
+    format!("{}:{:04.1}", (t / 60.0).floor() as u64, t % 60.0)
 }

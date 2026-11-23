@@ -1,5 +1,5 @@
 //! 置き場。場所を決め打ちにせず、`~/.config/falcon-launcher/場所.tsv`(キー<TAB>パス)から読む。
-//! 書いていないキーは、建てる準備の「建てる場所」(準備.tsv の build_dir)と `~/.local/share/falcon-launcher` から決める。
+//! 書いていないキーは、ビルドの準備の「ビルドする場所」(準備.tsv の build_dir)と `~/.local/share/falcon-launcher` から決める。
 //! 開発の木・試しの枝・クラスター・ギャラリーの足し(開発用)は、キーを書いた時だけ出る。
 
 use std::collections::HashMap;
@@ -9,17 +9,17 @@ use std::sync::OnceLock;
 pub struct Places {
     /// Falcon Engine のソース(git の木)
     pub source: String,
-    /// Falcon Engine の建て先(bin/blender がある所)
+    /// Falcon Engine のビルド先(bin/blender がある所)
     pub falcon_build: String,
     /// Falcon Engine の置き場(空なら GitHub の Relrei/Falcon-Engine)。写しや試しの置き場を指す時に書く
     pub falcon_repo: String,
-    /// 建て先の版を推し量る枝(公開の木は HEAD)
+    /// ビルド先の版を推し量る枝(公開の木は HEAD)
     pub falcon_branch: String,
     /// 起動の時に渡す DLSS のランタイムの置き場(FALCON_DLSS_RUNTIME_PATH)。空なら渡さない
     pub dlss_runtime: String,
     /// 開発の場所(build/host・build/test-<単位>・scripts/build.sh・integration)。空なら本線と試しの枝を出さない
     pub project: String,
-    /// 本線と試しの枝を起こす台本(空なら <建て先>/bin/blender を直に起こす)
+    /// 本線と試しの枝を起こす台本(空なら <ビルド先>/bin/blender を直に起こす)
     pub wrapper: String,
     /// クラスター(仮想ジオメトリ)の木。空なら出さない
     pub vg: String,
@@ -93,7 +93,7 @@ pub fn places() -> &'static Places {
         let data = data_dir();
         let get = |k: &str| m.get(k).cloned();
         let at = |sub: &str| data.join(sub).display().to_string();
-        // 建てる場所(建てる準備の頁で決める)の中: falcon-engine(ソース)と build(建て先)。docs/BUILD.md と同じ並び
+        // ビルドする場所(ビルドの準備の頁で決める)の中: falcon-engine(ソース)と build(ビルド先)。docs/BUILD.md と同じ並び
         let place = prep.get("build_dir").cloned().unwrap_or_else(|| at("build"));
         let source = get("source").unwrap_or_else(|| format!("{place}/falcon-engine"));
         let falcon_build = get("falcon_build").unwrap_or_else(|| format!("{place}/build"));

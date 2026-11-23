@@ -11,6 +11,9 @@ mod render_panel;
 mod setup_page;
 
 pub(super) const RAIL_W: f32 = 68.0;
+/// ホームの並ぶ物の間と、段落の前の間(測ってそろえた)
+const DASH_GAP: f32 = 12.0;
+const DASH_SECTION: f32 = 40.0;
 pub(super) const TOP_H: f32 = 50.0;
 const RIGHT_W: f32 = 300.0;
 /// 外側(左の列と上の帯)。中身の面(BG)より一段暗い
@@ -103,6 +106,85 @@ fn month_label(ts: i64) -> (i64, String) {
     (key, label)
 }
 
+/// まとめる幅の名前(Look::period の順)
+const PERIODS: [&str; 6] = ["1 週間", "2 週間", "1 か月", "3 か月", "半年", "1 年"];
+
+/// 期間の見出し(1 週間〜1 年)。週は月曜から
+fn period_label(ts: i64, step: u8) -> (i64, String) {
+    let off = tz_offset();
+    let day = (ts + off).div_euclid(86400);
+    let today = (now() + off).div_euclid(86400);
+    let (y, m, _) = civil(day);
+    let (ny, _, _) = civil(today);
+    let span = |a: i64, b: i64| {
+        let ((y1, m1, d1), (y2, m2, d2)) = (civil(a), civil(b));
+        let year = if y1 == ny { String::new() } else { format!("{y1} 年 ") };
+        if y1 == y2 && m1 == m2 {
+            format!("{year}{m1} 月 {d1}〜{d2} 日")
+        } else if y1 == y2 {
+            format!("{year}{m1} 月 {d1} 日〜{m2} 月 {d2} 日")
+        } else {
+            format!("{y1} 年 {m1} 月 {d1} 日〜{y2} 年 {m2} 月 {d2} 日")
+        }
+    };
+    match step {
+        0 | 1 => {
+            let n = if step == 0 { 7 } else { 14 };
+            let k = (day + 3).div_euclid(n);
+            let now_k = (today + 3).div_euclid(n);
+            let start = k * n - 3;
+            let range = span(start, start + n - 1);
+            let label = match (n, now_k - k) {
+                (7, 0) => format!("今週({range})"),
+                (7, 1) => format!("先週({range})"),
+                (_, 0) => format!("{range}(今)"),
+                _ => range,
+            };
+            (k, label)
+        }
+        2 => month_label(ts),
+        3 => {
+            let q = (m - 1) / 3;
+            (y * 4 + q, format!("{y} 年 {}〜{} 月", q * 3 + 1, q * 3 + 3))
+        }
+        4 => {
+            let h = (m - 1) / 6;
+            (y * 2 + h, format!("{y} 年 {}", if h == 0 { "前半(1〜6 月)" } else { "後半(7〜12 月)" }))
+        }
+        _ => (y, if y == ny { format!("今年({y} 年)") } else { format!("{y} 年") }),
+    }
+}
+
+/// 名前を比べやすくする(小文字・区切りを空白に)
+fn norm(s: &str) -> String {
+    s.to_lowercase().replace(['_', '-', '.'], " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// .blend の名前からシーンの語を取る(pavillon_barcelone_v1.2 → pavillon・lone-monk_cycles… → lone monk)
+fn scene_word(stem: &str) -> Option<String> {
+    const GENERIC: [&str; 12] = ["scene", "test", "untitled", "blender", "demo", "render", "basic", "sample", "simple", "startup", "splash", "new"];
+    let words: Vec<String> = norm(stem.trim_end_matches(".blend")).split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect();
+    let first = words.first()?;
+    if GENERIC.contains(&first.as_str()) || first.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if first.chars().count() >= 5 || !first.is_ascii() {
+        return Some(first.clone());
+    }
+    let second = words.get(1).filter(|w| !w.chars().all(|c| c.is_ascii_digit()) && !w.starts_with('v'))?;
+    Some(format!("{first} {second}"))
+}
+
+/// 見出しの名前(先頭を大文字に)
+fn scene_title(word: &str) -> String {
+    word.split(' ').map(|w| {
+        let mut c = w.chars();
+        c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default()
+    }).collect::<Vec<_>>().join(" ")
+}
+
+const NO_SCENE: &str = "シーン不明";
+
 /// .blend の行で押された物
 enum BlendHit {
     Open(PathBuf),
@@ -166,6 +248,10 @@ impl App {
         if view == View::Prep {
             self.prep_checks = prep::check_all(&self.prep_paths);
         }
+        if view == View::Addons {
+            // 開くたびに読み直す(入れたり消したりした後に古いまま出さない)
+            self.addons = None;
+        }
         if view == View::Trees && self.trees.is_empty() && self.trees_rx.is_none() {
             self.start_trees(ctx);
         }
@@ -189,13 +275,14 @@ impl App {
         match self.view {
             View::Dash => (I_HOME, "ホーム".into()),
             View::Start => (I_CUBE, self.cur_build().map(|b| b.title).unwrap_or_default()),
-            View::Home => (I_COMPASS, "ビルドを探す・建てる".into()),
-            View::Renders => (I_PICTURE, "レンダリング結果".into()),
-            View::Queue => (I_TASKS, "レンダリングの一覧".into()),
+            View::Home => (I_COMPASS, "ビルドを探す・コンパイルする".into()),
+            View::Renders => (I_PICTURE, "ライブラリ".into()),
+            View::Queue => (I_CAMERA, "レンダリングの一覧".into()),
             View::Trees => (I_CODE, "木と枝".into()),
             View::Log => (I_LOG, "ログ".into()),
             View::Settings => (I_GEAR, "設定".into()),
-            View::Prep => (I_DOWNLOAD, "建てる準備".into()),
+            View::Prep => (I_DOWNLOAD, "ビルドの準備".into()),
+            View::Addons => (I_FOLDER, "アドオン".into()),
         }
     }
 
@@ -215,12 +302,12 @@ impl App {
                 }
                 // 起動中の Blender
                 let n = self.running.len();
-                let text = if n == 0 { "起動中の Blender なし".to_string() } else { format!("Blender {n} 本起動中") };
+                let text = if n == 0 { "起動中の Blender なし".to_string() } else { format!("Blender が {n} つ起動中") };
                 pill(ui, if n == 0 { FAINT } else { OK }, text);
                 // 描いている物
                 if let Some(j) = self.queue.snapshot().into_iter().find(|j| matches!(j.state, JobState::Running | JobState::Paused)) {
                     let c = if j.state == JobState::Paused { WARN } else { ACCENT };
-                    if pill(ui, c, format!("{} を描いています · {} 枚", j.name(), j.done_frames())).on_hover_text("レンダリングの一覧を開く").clicked() {
+                    if pill(ui, c, match j.remaining_text() { Some(eta) => format!("{} を描いています · {} 枚 · {eta}", j.name(), j.done_frames()), None => format!("{} を描いています · {} 枚", j.name(), j.done_frames()) }).on_hover_text("レンダリングの一覧を開く").clicked() {
                         self.goto(View::Queue, ctx);
                     }
                 }
@@ -286,7 +373,7 @@ impl App {
         ui.vertical_centered(|ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             ui.add_space(10.0);
-            let items = [(View::Dash, I_HOME, "ホーム"), (View::Home, I_COMPASS, "ビルドを探す・建てる"), (View::Renders, I_PICTURE, "レンダリング結果"), (View::Queue, I_TASKS, "レンダリングの一覧"), (View::Trees, I_CODE, "木と枝"), (View::Prep, I_DOWNLOAD, "建てる準備(要る道具と SDK)")];
+            let items = [(View::Dash, I_HOME, "ホーム"), (View::Home, I_COMPASS, "ビルドを探す・コンパイルする"), (View::Renders, I_PICTURE, "ライブラリ(レンダリング結果)"), (View::Queue, I_CAMERA, "レンダリングの一覧"), (View::Addons, I_FOLDER, "アドオン(どの版に入っているか)"), (View::Trees, I_CODE, "木と枝"), (View::Prep, I_DOWNLOAD, "ビルドの準備(要る道具と SDK)")];
             for (view, icon, tip) in items {
                 let dot = view == View::Queue && self.queue.is_running();
                 if Self::rail_button(ui, icon, self.view == view, dot).on_hover_text(tip).clicked() {
@@ -360,7 +447,7 @@ impl App {
             }
             View::Renders => {
                 Self::page_scroll(&mut cui, "renders", |ui, w| {
-                    ui.label(RichText::new("レンダリング結果").font(bold(24.0)).color(TEXT));
+                    ui.label(RichText::new("ライブラリ").font(bold(24.0)).color(TEXT));
                     ui.add_space(12.0);
                     self.renders_grid(ui, None, w);
                 });
@@ -380,6 +467,9 @@ impl App {
             }
             View::Prep => {
                 Self::page_scroll(&mut cui, "prep", |ui, w| self.prep_page(ui, w, ctx));
+            }
+            View::Addons => {
+                Self::page_scroll(&mut cui, "addons", |ui, w| self.addons_page(ui, w));
             }
             View::Log => {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 10)).show(&mut cui, |ui| self.log_view(ui));
@@ -532,11 +622,11 @@ impl App {
                 if ui.add(egui::Button::new(RichText::new("更新履歴を見る").size(12.5).color(ACCENT_TEXT)).frame(false)).clicked() {
                     go_tab = Some(StartTab::Changes);
                 }
-                // 建てた物より先の変更
+                // ビルドした時より後の変更
                 if let Some(n) = self.aheads.get(&b.key).copied().flatten().filter(|n| *n > 0 && b.has_bin) {
                     ui.add_space(6.0);
                     let can = matches!(b.kind, Kind::Main | Kind::Test);
-                    let t = RichText::new(format!("{I_BUILD}  枝が建てた物より {n} 本先です{}", if can { " · 建て直す" } else { "" })).size(12.5).color(WARN);
+                    let t = RichText::new(format!("{I_BUILD}  ビルドした時より、枝が {n} コミット進んでいます{}", if can { " · ビルドし直す" } else { "" })).size(12.5).color(WARN);
                     if ui.add(egui::Button::new(t).frame(false)).clicked() && can {
                         self.confirm_build = Some(b.key.clone());
                     }
@@ -544,7 +634,7 @@ impl App {
             }
             Self::right_line(ui, w);
             if let Some((avail, size)) = self.disk {
-                // 名前は場所.tsv の disk を書いた時だけ(既定の建て先の名前「build」は、ディスクの名前に見えて紛らわしい)
+                // 名前は場所.tsv の disk を書いた時だけ(既定のビルド先の名前「build」は、ディスクの名前に見えて紛らわしい)
                 let name = crate::places::places().disk_label.clone();
                 ui.label(RichText::new(format!("{name}空き {} / {}", gb(avail), gb(size))).size(11.0).color(FAINT));
             }
@@ -552,7 +642,7 @@ impl App {
                 let c = if self.main_branch_now == scan::MAIN_BRANCH { FAINT } else { WARN };
                 ui.label(RichText::new(format!("本体の木: {}", self.main_branch_now)).size(11.0).color(c));
             }
-            ui.label(RichText::new(format!("最後の見回り {}  ·  Falcon Launcher 0.1.0", when(self.scanned_at))).size(11.0).color(FAINT));
+            ui.label(RichText::new(format!("最後の見回り {}  ·  Falcon Launcher {}", when(self.scanned_at), env!("CARGO_PKG_VERSION"))).size(11.0).color(FAINT));
             ui.add_space(16.0);
         });
         if let Some(k) = pick {
@@ -598,12 +688,17 @@ impl App {
         let mut open_ver = None;
         let mut go = None;
         Self::page_scroll(ui, "dash", |ui, w| {
+            // 間は測ってそろえる:
+            // 並ぶ物の間はどこも DASH_GAP、段落の前はどこも DASH_SECTION。egui が足す item_spacing.y を引いて足す
+            let sy = ui.spacing().item_spacing.y;
+            let row_gap = DASH_GAP - sy;
+            let section = DASH_SECTION - DASH_GAP;
             self.update_banner(ui, ctx);
-            // 新しく起動する所
+            // 新しく起動する所(Horizon の起動の塊を参考に)
             if let Some(b) = self.cur_build() {
                 self.launch_block(ui, &b, &mut actions);
             }
-            ui.add_space(30.0);
+            ui.add_space(row_gap + section);
             // 続きから
             heading(ui, "続きから", 0, "");
             ui.add_space(8.0);
@@ -615,9 +710,9 @@ impl App {
                 if let Some(h) = self.blend_row(ui, f, w) {
                     hits.push(h);
                 }
-                ui.add_space(8.0);
+                ui.add_space(row_gap);
             }
-            ui.add_space(18.0);
+            ui.add_space(section);
             // 版のカード
             if heading(ui, "版", 0, "ビルドを探す") {
                 go = Some(View::Home);
@@ -625,9 +720,9 @@ impl App {
             ui.add_space(8.0);
             let list: Vec<Build> = self.left_groups().into_iter().flat_map(|(_, v)| v).collect();
             if list.is_empty() {
-                ui.label(RichText::new(format!("まだ版がありません。左の {I_DOWNLOAD}(建てる準備)で要る物をそろえて Falcon Engine を建てると出ます。公式の Blender は ~/Applications などに置くと自動で出ます")).size(12.5).color(FAINT));
+                ui.label(RichText::new(format!("まだ版がありません。左の {I_DOWNLOAD}(ビルドの準備)で要る物をそろえて Falcon Engine をビルドすると出ます。公式の Blender は ~/Applications などに置くと自動で出ます")).size(12.5).color(FAINT));
             }
-            let gap = 12.0;
+            let gap = DASH_GAP;
             let cols = ((w + gap) / (300.0 + gap)).floor().max(1.0) as usize;
             let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
             for row in list.chunks(cols) {
@@ -641,26 +736,29 @@ impl App {
                         paint_build_icon(ui, Rect::from_min_size(r.min + Vec2::new(14.0, 14.0), Vec2::splat(48.0)), b, 12);
                         let x = r.left() + 76.0;
                         let p = ui.painter();
-                        p.galley(Pos2::new(x, r.top() + 16.0), elide(ui, &b.title, bold(15.0), TEXT, r.right() - x - 110.0), TEXT);
+                        // 起動のボタンは ▶ だけにして、名前の幅を空ける(4 枚並びで「Falcon Engin…」と切れていた)
+                        let br = Rect::from_min_size(Pos2::new(r.right() - 14.0 - 40.0, r.center().y - 16.0), Vec2::new(40.0, 32.0));
+                        let name_w = if b.launchable() { br.left() - 12.0 - x } else { r.right() - 14.0 - x };
+                        // 名前と状態の 2 行を、印(48)と同じ上下の真ん中に
+                        p.galley(Pos2::new(x, r.top() + 17.0), elide(ui, &b.title, bold(15.0), TEXT, name_w), TEXT);
                         let (dot, state) = self.state_of(b);
-                        p.circle_filled(Pos2::new(x + 3.5, r.top() + 50.0), 3.5, dot);
-                        p.text(Pos2::new(x + 12.0, r.top() + 50.0), Align2::LEFT_CENTER, state, FontId::proportional(12.0), MUTED);
-                        let br = Rect::from_min_size(Pos2::new(r.right() - 96.0, r.center().y - 16.0), Vec2::new(82.0, 32.0));
+                        p.circle_filled(Pos2::new(x + 3.5, r.top() + 51.0), 3.5, dot);
+                        p.text(Pos2::new(x + 12.0, r.top() + 51.0), Align2::LEFT_CENTER, state, FontId::proportional(12.0), MUTED);
                         if b.launchable() {
-                            if place_fill(ui, br, true, row_button(format!("{I_PLAY}  起動"))).clicked() {
+                            if place_fill(ui, br, true, row_button(I_PLAY.to_string())).on_hover_text("起動する").clicked() {
                                 actions.push(Action::Launch(b.key.clone()));
                             }
                         } else if resp.clicked() {
                             open_ver = Some(b.key.clone());
                         }
-                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&b.title).clicked() {
                             open_ver = Some(b.key.clone());
                         }
                     }
                 });
-                ui.add_space(gap);
+                ui.add_space(row_gap);
             }
-            ui.add_space(18.0);
+            ui.add_space(section);
             // 最近の絵
             if heading(ui, "最近の絵", 0, "すべて") {
                 go = Some(View::Renders);
@@ -684,7 +782,7 @@ impl App {
                         }
                     }
                 });
-                ui.add_space(gap);
+                ui.add_space(row_gap);
             }
             if let Some(i) = click {
                 self.lightbox = Some((items.clone(), i, PathBuf::new()));
@@ -768,7 +866,7 @@ impl App {
                 ui.label(RichText::new(&b.title).font(bold(24.0)).color(TEXT));
                 let mut meta = vec![format!("{I_CUBE}  {}", b.category)];
                 if b.built_ts > 0 {
-                    meta.push(format!("{I_CLOCK}  {} に建てた", when(b.built_ts)));
+                    meta.push(format!("{I_CLOCK}  {} にビルドした", when(b.built_ts)));
                 }
                 if let Some(n) = self.size_of(b) {
                     meta.push(format!("{I_HDD}  {}", gb(n)));
@@ -784,7 +882,7 @@ impl App {
                 let more = ui.add(round(I_MORE));
                 egui::Popup::menu(&more).show(|ui| {
                     ui.set_min_width(220.0);
-                    if matches!(b.kind, Kind::Main | Kind::Test) && ui.button(format!("{I_BUILD}   {}", if b.has_bin { "建て直す" } else { "建てる" })).clicked() {
+                    if matches!(b.kind, Kind::Main | Kind::Test) && ui.button(format!("{I_BUILD}   {}", if b.has_bin { "ビルドし直す" } else { "ビルドする" })).clicked() {
                         actions.push(Action::Build(b.key.clone()));
                     }
                     if b.dir.join("build.log").is_file() && ui.button(format!("{I_LOG}   ビルドのログ")).clicked() {
@@ -805,7 +903,7 @@ impl App {
                 } else if b.launchable() {
                     (format!("{I_PLAY}   起動"), true)
                 } else {
-                    (format!("{I_BUILD}   建てる"), true)
+                    (format!("{I_BUILD}   ビルドする"), true)
                 };
                 let btn = egui::Button::new(RichText::new(text).font(bold(16.0)).color(if primary { ON_ACCENT } else { TEXT })).fill(if primary { ACCENT } else { CARD_HI }).stroke(Stroke::NONE).corner_radius(CornerRadius::same(12)).min_size(Vec2::new(118.0, 44.0));
                 if ui.add(btn).clicked() {
@@ -826,7 +924,7 @@ impl App {
         let n_renders: usize = self.gallery.iter().filter(|a| scan::album_matches(a, b)).map(|a| a.items.len()).sum();
         let n_queue = self.queue.snapshot().len();
         let n_changes = self.changes.get(&b.key).map(|v| v.len()).unwrap_or(0);
-        let mut tabs = vec![(StartTab::Blend, I_CUBE, ".blend", n_blend), (StartTab::Renders, I_PICTURE, "レンダリング結果", n_renders), (StartTab::Queue, I_TASKS, "一覧", n_queue), (StartTab::Changes, I_HISTORY, "更新履歴", n_changes), (StartTab::About, I_LICENSE, "説明", 0)];
+        let mut tabs = vec![(StartTab::Blend, I_CUBE, ".blend", n_blend), (StartTab::Renders, I_PICTURE, "ライブラリ", n_renders), (StartTab::Queue, I_TASKS, "一覧", n_queue), (StartTab::Changes, I_HISTORY, "更新履歴", n_changes), (StartTab::About, I_LICENSE, "説明", 0)];
         match b.kind {
             Kind::Main => tabs.push((StartTab::Features, I_CAL, "機能", self.features.len())),
             Kind::Ext => tabs.push((StartTab::Features, I_CAL, "場面", self.scenes.len())),
@@ -1004,16 +1102,68 @@ impl App {
         }
     }
 
-    // ---------- レンダリング結果 ----------
+    // ---------- ライブラリ(レンダリング結果) ----------
+
+    /// シーンの名前の手がかり(見出し, 探す語)。長い語を先に
+    fn scene_words(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = vec![];
+        let mut push = |title: String, word: &str| {
+            let w = norm(word);
+            if !w.is_empty() && !out.iter().any(|x| x.1 == w) {
+                out.push((title, w));
+            }
+        };
+        // 手で書いた物(~/.config/falcon-launcher/シーンの名前.txt。1 行に「見出し<TAB>語,語」)
+        for line in std::fs::read_to_string(config_dir().join("シーンの名前.txt")).unwrap_or_default().lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (title, words) = line.split_once('\t').unwrap_or((line, line));
+            for w in words.split(',') {
+                push(title.trim().to_string(), w.trim());
+            }
+        }
+        // 最近開いた .blend と、レンダリングの一覧の .blend
+        let paths = self.blends.iter().flat_map(|v| v.iter().map(|b| b.path.clone())).chain(self.queue.snapshot().into_iter().map(|j| j.source));
+        for p in paths {
+            if let Some(w) = p.file_stem().and_then(|s| scene_word(&s.to_string_lossy())) {
+                push(scene_title(&w), &w);
+            }
+        }
+        for w in ["bistro", "junkshop", "classroom", "barbershop", "pavillon", "sponza", "lone monk", "monster", "wanderer", "cornell"] {
+            push(scene_title(w), w);
+        }
+        out.sort_by_key(|x| std::cmp::Reverse(x.1.chars().count()));
+        out
+    }
+
+    /// 絵のシーン。予約の出力はフォルダの名前の .blend から、ほかは絵のファイル名、無ければ組の名前から
+    /// (1 つの組に色々なシーンが入っていることがあるので、絵ごとに見る)
+    fn scene_of(a: &Album, m: &Media, words: &[(String, String)]) -> String {
+        if a.dir.starts_with(scan::render_dir()) {
+            let n = a.dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let blend = n.split_once(' ').map(|x| x.1).unwrap_or(&n);
+            let blend = blend.rsplit_once(" [").map(|x| x.0).unwrap_or(blend);
+            if let Some(w) = scene_word(blend) {
+                return words.iter().find(|x| x.1 == w).map(|x| x.0.clone()).unwrap_or_else(|| scene_title(&w));
+            }
+        }
+        let file = m.frames.first().unwrap_or(&m.path).file_stem().map(|s| norm(&s.to_string_lossy())).unwrap_or_default();
+        let title = norm(&a.title);
+        [file, title].iter().find_map(|t| words.iter().find(|x| t.contains(x.1.as_str()))).map(|x| x.0.clone()).unwrap_or_else(|| NO_SCENE.into())
+    }
 
     fn renders_grid(&mut self, ui: &mut egui::Ui, only: Option<&Build>, w: f32) {
         let gallery = self.gallery.clone();
+        let look_before = self.look.clone();
+        self.sweep_gallery_tex(ui.ctx());
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             search_box(ui, &mut self.gallery_query, "組の名前・説明で探す", w);
         });
         ui.add_space(10.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let sort = ui.add(soft_button(format!("{I_SORT}  {}  {I_DOWN}", if self.render_old_first { "古い順" } else { "新しい順" })));
             egui::Popup::menu(&sort).show(|ui| {
@@ -1024,16 +1174,35 @@ impl App {
                     self.render_old_first = true;
                 }
             });
-            let group = ui.add(soft_button(format!("{I_GRID}  {}  {I_DOWN}", if self.render_by_album { "組ごと" } else { "月ごと" })));
+            let gname = |g: Group| match g {
+                Group::Period => "期間ごと",
+                Group::Album => "組ごと",
+                Group::Scene => "シーンごと",
+            };
+            let group = ui.add(soft_button(format!("{I_GRID}  {}  {I_DOWN}", gname(self.look.group))));
             egui::Popup::menu(&group).show(|ui| {
-                if ui.selectable_label(!self.render_by_album, "月ごと").clicked() {
-                    self.render_by_album = false;
-                }
-                if ui.selectable_label(self.render_by_album, "組ごと").clicked() {
-                    self.render_by_album = true;
+                for g in [Group::Period, Group::Album, Group::Scene] {
+                    if ui.selectable_label(self.look.group == g, gname(g)).clicked() {
+                        self.look.group = g;
+                    }
                 }
             });
+            // 期間の幅(1 週間〜1 年)
+            if self.look.group == Group::Period {
+                ui.add_space(6.0);
+                ui.label(RichText::new("幅").size(13.0).color(MUTED));
+                ui.add(egui::Slider::new(&mut self.look.period, 0..=5).show_value(false)).on_hover_text("左ほど細かく(1 週間)、右ほど大きく(1 年)まとめます");
+                ui.label(RichText::new(PERIODS[self.look.period.min(5) as usize]).font(bold(13.0)).color(TEXT));
+            }
+            // 横の枚数(0 は幅に合わせる)
+            ui.add_space(6.0);
+            ui.label(RichText::new("横の枚数").size(13.0).color(MUTED));
+            ui.add(egui::Slider::new(&mut self.look.cols, 0..=10).show_value(false)).on_hover_text("いちばん左は、頁の幅に合わせて決めます");
+            ui.label(RichText::new(if self.look.cols == 0 { "自動".to_string() } else { format!("{} 枚", self.look.cols) }).font(bold(13.0)).color(TEXT));
         });
+        if self.look != look_before {
+            self.look.save();
+        }
         ui.add_space(14.0);
         if gallery.is_empty() {
             ui.label(RichText::new(if self.gallery_rx.is_some() { "絵と動画を集めています…" } else { "絵も動画もまだありません。" }).color(FAINT));
@@ -1047,10 +1216,25 @@ impl App {
         }
         // 組を見出しにまとめる(並びは保つ)
         let mut groups: Vec<(String, String, Vec<(String, Media)>)> = vec![];
+        let words = if self.look.group == Group::Scene { self.scene_words() } else { vec![] };
         for a in albums {
-            let (key, label) = if self.render_by_album { (a.dir.display().to_string(), a.title.clone()) } else {
-                let (k, l) = month_label(a.ts);
-                (k.to_string(), l)
+            if self.look.group == Group::Scene {
+                for m in &a.items {
+                    let s = Self::scene_of(a, m, &words);
+                    let key = format!("scene:{s}");
+                    match groups.iter_mut().find(|g| g.0 == key) {
+                        Some(g) => g.2.push((a.title.clone(), m.clone())),
+                        None => groups.push((key, s, vec![(a.title.clone(), m.clone())])),
+                    }
+                }
+                continue;
+            }
+            let (key, label) = match self.look.group {
+                Group::Album | Group::Scene => (a.dir.display().to_string(), a.title.clone()),
+                Group::Period => {
+                    let (k, l) = period_label(a.ts, self.look.period);
+                    (format!("p{}:{k}", self.look.period), l)
+                }
             };
             let items = a.items.iter().map(|m| (a.title.clone(), m.clone()));
             match groups.iter_mut().find(|g| g.0 == key) {
@@ -1058,15 +1242,25 @@ impl App {
                 None => groups.push((key, label, items.collect())),
             }
         }
+        // シーンの分からない組は最後に
+        if let Some(i) = groups.iter().position(|g| g.1 == NO_SCENE) {
+            let g = groups.remove(i);
+            groups.push(g);
+        }
         if groups.is_empty() {
             ui.label(RichText::new("当てはまる物がありません。").color(FAINT));
             return;
         }
         let gap = 12.0;
-        let cols = ((w + gap) / (280.0 + gap)).floor().max(1.0) as usize;
+        let cols = if self.look.cols > 0 { self.look.cols as usize } else { ((w + gap) / (280.0 + gap)).floor().max(1.0) as usize };
         let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
         let th = cw * 9.0 / 16.0;
         let mut click = None;
+        // 先読みは画面 1 枚分先まで、控えに残すのは 3 枚分まで
+        let clip = ui.clip_rect();
+        let near = clip.expand2(Vec2::new(0.0, clip.height() * PREFETCH_SCREENS));
+        let keep = clip.expand2(Vec2::new(0.0, clip.height() * KEEP_SCREENS));
+        let frame = ui.ctx().cumulative_frame_nr();
         for (key, label, items) in &groups {
             let closed = self.render_closed.contains(key);
             let (hr, hresp) = ui.allocate_exact_size(Vec2::new(w, 30.0), Sense::click());
@@ -1095,6 +1289,13 @@ impl App {
                                 self.paint_thumb(ui, r, m, CornerRadius::same(12), true);
                                 if resp.hovered() {
                                     ui.painter().rect_stroke(r, CornerRadius::same(12), Stroke::new(2.0, ACCENT.gamma_multiply(0.8)), StrokeKind::Inside);
+                                }
+                            } else if near.intersects(r) {
+                                self.prefetch_thumb(ui.ctx(), m, r.size());
+                            }
+                            if keep.intersects(r) {
+                                if let Some(uri) = self.thumb_uri(m, false) {
+                                    self.gallery_tex.insert(uri, frame);
                                 }
                             }
                             let tip = if m.caption.is_empty() { title.clone() } else { format!("{title}\n{}", m.caption) };
@@ -1161,10 +1362,10 @@ impl App {
                 ui.add(egui::DragValue::new(&mut s.nice).range(0..=19).custom_formatter(|v, _| format!("nice {v:.0}")));
             });
             Self::setting_row(ui, iw, "RAM の上限", "超えると描いている物だけが止められる(systemd のスコープ)", |ui| {
-                ui.add(egui::DragValue::new(&mut s.ram_gb).range(0.0..=1024.0).speed(0.5).custom_formatter(|v, _| if v == 0.0 { "無し".into() } else { format!("{v:.0} GB") }));
+                ui.add(egui::DragValue::new(&mut s.ram_gb).range(0.0..=1024.0).speed(0.5).custom_formatter(|v, _| if v == 0.0 { "上限なし".into() } else { format!("{v:.0} GB") }));
             });
             Self::setting_row(ui, iw, "VRAM の上限", "全体の VRAM がこれに近い時は次を始めず、超えたら止める", |ui| {
-                ui.add(egui::DragValue::new(&mut s.vram_mib).range(0..=81920).speed(64.0).custom_formatter(|v, _| if v == 0.0 { "無し".into() } else { format!("{v:.0} MiB") }));
+                ui.add(egui::DragValue::new(&mut s.vram_mib).range(0..=81920).speed(64.0).custom_formatter(|v, _| if v == 0.0 { "上限なし".into() } else { format!("{v:.0} MiB") }));
             });
         });
         if s.threads != before.threads || s.nice != before.nice || s.ram_gb != before.ram_gb || s.vram_mib != before.vram_mib {
@@ -1200,7 +1401,7 @@ impl App {
                 ("ギャラリー(手で置く絵)", PathBuf::from(&pl.gallery)),
                 ("連番を動画にした物", PathBuf::from(&pl.seq)),
                 ("Falcon Engine のソース", PathBuf::from(&pl.source)),
-                ("Falcon Engine の建て先", PathBuf::from(&pl.falcon_build)),
+                ("Falcon Engine のビルド先", PathBuf::from(&pl.falcon_build)),
                 ("説明の文(版ごと)", PathBuf::from(&pl.about)),
                 ("ランチャーの設定(場所.tsv で置き場を変えられます)", config_dir()),
                 ("小さな絵の控え", PathBuf::from(format!("{}/.cache/falcon-launcher", std::env::var("HOME").unwrap_or_default()))),
@@ -1232,7 +1433,7 @@ impl App {
         // ランチャーについて
         Self::settings_card(ui, w, "ランチャーについて", "", |ui, iw| {
             Self::setting_row(ui, iw, "版", "", |ui| {
-                ui.label(RichText::new("Falcon Launcher 0.1.0 · Linux").size(13.5).color(TEXT));
+                ui.label(RichText::new(format!("Falcon Launcher {} · Linux", env!("CARGO_PKG_VERSION"))).size(13.5).color(TEXT));
             });
             Self::setting_row(ui, iw, "ソース", "", |ui| Self::path_cell(ui, Path::new(env!("CARGO_MANIFEST_DIR"))));
             Self::setting_row(ui, iw, "ビルドの決まり", "", |ui| {
@@ -1241,11 +1442,11 @@ impl App {
         });
     }
 
-    // ---------- 建てる準備 ----------
+    // ---------- ビルドの準備 ----------
 
     fn prep_page(&mut self, ui: &mut egui::Ui, w: f32, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("建てる準備").font(bold(24.0)).color(TEXT));
+            ui.label(RichText::new("ビルドの準備").font(bold(24.0)).color(TEXT));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(soft_button(format!("{I_REFRESH}  確かめ直す"))).clicked() {
                     self.prep_checks = prep::check_all(&self.prep_paths);
@@ -1253,7 +1454,7 @@ impl App {
             });
         });
         let (pretty, _) = prep::distro();
-        ui.label(RichText::new(format!("Falcon Engine をこの PC で建てるのに要る物です。{pretty} · Windows は後で足します")).size(12.5).color(FAINT));
+        ui.label(RichText::new(format!("Falcon Engine をこの PC でビルドするのに要る物です。{pretty} · Windows は後で足します")).size(12.5).color(FAINT));
         ui.add_space(6.0);
         let need: Vec<&prep::Check> = self.prep_checks.iter().filter(|c| !c.optional).collect();
         let ok = need.iter().filter(|c| c.state == prep::State::Ok).count();
@@ -1285,7 +1486,7 @@ impl App {
                     let (icon, col, word) = match c.state {
                         prep::State::Ok => ("\u{f00c}", OK, "あり"),
                         prep::State::Warn => ("\u{f071}", WARN, "要確認"),
-                        prep::State::Missing if c.optional => ("\u{f111}", FAINT, "無し(無くても建てられる)"),
+                        prep::State::Missing if c.optional => ("\u{f111}", FAINT, "無し(無くてもビルドできる)"),
                         prep::State::Missing => ("\u{f00d}", ERR, "無し"),
                     };
                     ui.horizontal(|ui| {
@@ -1479,7 +1680,7 @@ impl App {
             stats.push(b.what.clone());
         }
         if b.built_ts > 0 {
-            stats.push(format!("{} に建てた", when(b.built_ts)));
+            stats.push(format!("{} にビルドした", when(b.built_ts)));
         }
         if let Some(n) = self.size_of(b) {
             stats.push(gb(n));
@@ -1490,14 +1691,14 @@ impl App {
         ui.add_space(18.0);
         // 起動(⋯)・版・フォルダ
         let h = 56.0;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
+        let row = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = DASH_GAP;
             let (text, primary) = if b.building.is_some() {
                 (format!("{I_LOG}   ビルド中・ログ"), false)
             } else if b.launchable() {
                 (format!("{I_PLAY}   起動"), true)
             } else {
-                (format!("{I_BUILD}   建てる"), true)
+                (format!("{I_BUILD}   ビルドする"), true)
             };
             let fg = if primary { ON_ACCENT } else { TEXT };
             egui::Frame::new().fill(if primary { ACCENT } else { CARD_HI }).corner_radius(CornerRadius::same(12)).show(ui, |ui| {
@@ -1519,7 +1720,7 @@ impl App {
                         if ui.button(format!("{I_CUBE}   版の頁を開く")).clicked() {
                             self.open_version(&b.key, Some(StartTab::Blend));
                         }
-                        if matches!(b.kind, Kind::Main | Kind::Test) && ui.button(format!("{I_BUILD}   {}", if b.has_bin { "建て直す" } else { "建てる" })).clicked() {
+                        if matches!(b.kind, Kind::Main | Kind::Test) && ui.button(format!("{I_BUILD}   {}", if b.has_bin { "ビルドし直す" } else { "ビルドする" })).clicked() {
                             actions.push(Action::Build(b.key.clone()));
                         }
                         if b.dir.join("build.log").is_file() && ui.button(format!("{I_LOG}   ビルドのログ")).clicked() {
@@ -1563,24 +1764,28 @@ impl App {
                 actions.push(Action::Folder(b.dir.clone()));
             }
         });
-        ui.add_space(12.0);
-        // .blend のパスを貼って開く
+        let row_w = row.response.rect.width();
+        ui.add_space(DASH_GAP - ui.spacing().item_spacing.y);
+        // .blend のパスを貼って開く(Horizon の「招待コードを貼り付け」の所)
         let typed = PathBuf::from(self.path_paste.trim().trim_matches('\'').trim_matches('"'));
         let mut go = false;
-        egui::Frame::new().fill(CARD).stroke(Stroke::new(1.0, LINE)).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin { left: 14, right: 8, top: 8, bottom: 8 }).show(ui, |ui| {
-            ui.set_width(340.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{I_CUBE} ")).size(14.0).color(FAINT));
-                let edit = ui.add(egui::TextEdit::singleline(&mut self.path_paste).hint_text(".blend のパスを貼る・落とす").frame(egui::Frame::NONE).desired_width(220.0));
-                if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    go = true;
-                }
-                let ob = egui::Button::new(RichText::new("開く").size(13.0).color(TEXT)).fill(CARD_HI).corner_radius(CornerRadius::same(8)).min_size(Vec2::new(56.0, 32.0));
-                if ui.add_enabled(typed.is_file(), ob).on_hover_text("使う版で開きます").clicked() {
-                    go = true;
-                }
-            });
-        });
+        // 上の列(起動・版・フォルダ)の右端までの幅。高さ 48 で、中身は上下の真ん中
+        let (br, _) = ui.allocate_exact_size(Vec2::new(row_w, 48.0), Sense::hover());
+        ui.painter().rect_filled(br, CornerRadius::same(12), CARD);
+        ui.painter().rect_stroke(br, CornerRadius::same(12), Stroke::new(1.0, LINE), StrokeKind::Inside);
+        let inner = Rect::from_min_max(br.min + Vec2::new(14.0, 0.0), br.max - Vec2::new(8.0, 0.0));
+        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        cui.label(RichText::new(I_CUBE).size(14.0).color(FAINT));
+        let ob_w = 56.0;
+        let edit_w = (inner.width() - 14.0 - ob_w - cui.spacing().item_spacing.x * 3.0).max(80.0);
+        let edit = cui.add(egui::TextEdit::singleline(&mut self.path_paste).hint_text(".blend のパスを貼る・落とす").frame(egui::Frame::NONE).desired_width(edit_w).min_size(Vec2::new(0.0, 32.0)).align(Align2::LEFT_CENTER));
+        if edit.lost_focus() && cui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            go = true;
+        }
+        let ob = egui::Button::new(RichText::new("開く").size(13.0).color(TEXT)).fill(CARD_HI).corner_radius(CornerRadius::same(8)).min_size(Vec2::new(ob_w, 32.0));
+        if cui.add_enabled(typed.is_file(), ob).on_hover_text("使う版で開きます").clicked() {
+            go = true;
+        }
         if go {
             if typed.is_file() {
                 self.open_blend(&typed);

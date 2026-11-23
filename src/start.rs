@@ -131,9 +131,9 @@ impl App {
         } else if b.launchable() {
             (OK, "準備完了".into())
         } else if b.ok == Some(false) {
-            (ERR, "建てて失敗".into())
+            (ERR, "ビルドに失敗".into())
         } else {
-            (FAINT, "未建て".into())
+            (FAINT, "未ビルド".into())
         }
     }
 
@@ -230,7 +230,7 @@ impl App {
         let gib = |b: u64| b as f32 / 1073741824.0;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            Self::tile(ui, tw, "CPU", format!("{:.0} %", last.cpu), format!("{} 本", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)), &hist.iter().map(|x| x.cpu).collect::<Vec<_>>(), 100.0, LINK);
+            Self::tile(ui, tw, "CPU", format!("{:.0} %", last.cpu), { let (n, t, _, _) = self.sys_caps(); format!("{} コア · {n} スレッド", n / t.max(1)) }, &hist.iter().map(|x| x.cpu).collect::<Vec<_>>(), 100.0, LINK);
             Self::tile(ui, tw, "メモリ", format!("{:.1} GB", gib(last.ram_used)), format!("全体 {:.0} GB{}", gib(last.ram_total), if s.ram_gb > 0.0 { format!(" · 上限 {:.0} GB", s.ram_gb) } else { String::new() }), &hist.iter().map(|x| gib(x.ram_used)).collect::<Vec<_>>(), gib(last.ram_total.max(1)), OK);
             Self::tile(ui, tw, "GPU", format!("{:.0} %", last.gpu), "使用率".into(), &hist.iter().map(|x| x.gpu).collect::<Vec<_>>(), 100.0, ACCENT);
             let vc = if s.vram_mib > 0 && last.vram_used + 512 > s.vram_mib { WARN } else { ORANGE };
@@ -245,6 +245,149 @@ impl App {
         if hist.is_empty() {
             ui.label(RichText::new("測っています…(この頁を開いている時と、描いている時だけ 1 秒おきに測ります)").size(11.5).color(FAINT));
         }
+    }
+
+    /// 描いている間だけ出す横長の「進み」の欄
+    fn progress_panel(&mut self, ui: &mut egui::Ui, w: f32) {
+        let Some(j) = self.queue.snapshot().into_iter().find(|j| matches!(j.state, JobState::Running | JobState::Paused)) else {
+            return;
+        };
+        let done = j.done_frames();
+        let total = j.count();
+        let frac = total.map(|t| done as f32 / t.max(1) as f32).unwrap_or(0.0).clamp(0.0, 1.0);
+        let elapsed = if j.started > 0 { (now() - j.started).max(0) } else { 0 };
+        let hms = |s: i64| if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) };
+        let per = j.per_frame_secs().flatten();
+        let rem = j.remaining_secs().flatten();
+        let paused = j.state == JobState::Paused;
+        egui::Frame::new().fill(CARD.gamma_multiply(0.85)).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+            ui.set_width(w - 28.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(if paused { "一時停止中" } else { "描いています" }).size(12.0).color(if paused { WARN } else { ACCENT_TEXT }));
+                ui.add(egui::Label::new(RichText::new(format!("{}  ·  {}", j.name(), j.scene)).font(bold(16.0)).color(TEXT)).truncate());
+            });
+            ui.add_space(6.0);
+            let (r, _) = ui.allocate_exact_size(Vec2::new(w - 28.0, 10.0), Sense::hover());
+            let p = ui.painter();
+            p.rect_filled(r, CornerRadius::same(5), CARD_HI);
+            p.rect_filled(Rect::from_min_size(r.min, Vec2::new(r.width() * frac, r.height())), CornerRadius::same(5), if paused { WARN } else { ACCENT });
+            ui.add_space(8.0);
+            // 数字の並び: 枚数・経過・1 枚・残り・終わる時刻
+            let cells: Vec<(&str, String)> = vec![
+                ("枚数", match total { Some(t) => format!("{done} / {t}  ({:.0} %)", frac * 100.0), None => format!("{done}") }),
+                ("経過", hms(elapsed)),
+                ("1 枚", per.map(|p| if p < 60.0 { format!("{p:.1} 秒") } else { hms(p.round() as i64) }).unwrap_or_else(|| "計っています".into())),
+                ("残り", rem.map(queue::Job::rough).unwrap_or_else(|| "計っています".into())),
+                ("終わる時刻", rem.map(|r| format!("{} ごろ", when(now() + r))).unwrap_or_else(|| "-".into())),
+            ];
+            let cw = (w - 28.0) / cells.len() as f32;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (k, v) in cells {
+                    ui.allocate_ui_with_layout(Vec2::new(cw, 44.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_min_width(cw);
+                        ui.set_max_width(cw - 10.0);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(RichText::new(k).size(11.5).color(FAINT));
+                        ui.add(egui::Label::new(RichText::new(v).font(bold(17.0)).color(TEXT)).truncate());
+                    });
+                }
+            });
+            if !j.progress.is_empty() {
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(RichText::new(&j.progress).size(11.0).color(FAINT)).truncate());
+            }
+        });
+        ui.add_space(10.0);
+    }
+
+    /// スライダーの溝を見えるようにする(地の色と同じで見えなかった)。左側は trailing_fill で緑になる
+    pub(crate) fn slider_look(ui: &mut egui::Ui) {
+        let v = ui.visuals_mut();
+        v.widgets.inactive.bg_fill = CARD_HI;
+        v.selection.bg_fill = ACCENT.gamma_multiply(0.8);
+        ui.style_mut().spacing.interact_size.y = 22.0;
+    }
+
+    /// 「全体: 全部」「全体: 4 コア」
+    pub(crate) fn cpu_note(threads: u32, tpc: u32) -> String {
+        if threads == 0 { "全体: 全部".into() } else { format!("全体: {} コア", threads.div_ceil(tpc.max(1))) }
+    }
+    pub(crate) fn ram_note(gb: f32) -> String {
+        if gb <= 0.0 { "全体: 上限なし".into() } else { format!("全体: {gb:.0} GB") }
+    }
+    pub(crate) fn vram_note(mib: u32) -> String {
+        if mib == 0 { "全体: 上限なし".into() } else { format!("全体: {:.1} GB", mib as f32 / 1024.0) }
+    }
+
+    /// スライダーの値の欄に打った字を数にする(「全部」「上限なし」「無し」は 0、「12 本」「8 GB」は数の所だけ)
+    fn parse_zero(t: &str) -> Option<f64> {
+        if t.contains("全部") || t.contains("なし") || t.contains("無し") {
+            return Some(0.0);
+        }
+        let d: String = t.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+        d.parse().ok()
+    }
+
+    /// この PC の量: CPU の本数・RAM(GB)・VRAM(MiB)。スライダーの右端に使う
+    /// (論理の本数, 1 コアのスレッド数, RAM の GB, VRAM の MiB)
+    pub(crate) fn sys_caps(&self) -> (u32, u32, f32, u32) {
+        // 論理の本数は /proc/cpuinfo の processor の数(available_parallelism は起こした所の割り当てで減ることがある)
+        let info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+        let ncpu = match info.lines().filter(|l| l.starts_with("processor")).count() as u32 {
+            0 => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as u32,
+            n => n,
+        };
+        // 物理のコア数: (physical id, core id) の組の数
+        let cores = Some(info.as_str())
+            .map(|t| {
+                let (mut phys, mut set) = (String::new(), std::collections::HashSet::new());
+                for l in t.lines() {
+                    if let Some(v) = l.strip_prefix("physical id") { phys = v.trim_start_matches([' ', '\t', ':']).to_string(); }
+                    if let Some(v) = l.strip_prefix("core id") { set.insert((phys.clone(), v.trim_start_matches([' ', '\t', ':']).to_string())); }
+                }
+                set.len() as u32
+            })
+            .unwrap_or(0);
+        let tpc = if cores > 0 && ncpu % cores == 0 { ncpu / cores } else { 1 };
+        let ram = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemTotal:").and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<f64>().ok())))
+            .map(|kb| (kb / 1048576.0).ceil() as f32)
+            .unwrap_or(64.0);
+        let vram = self.queue.monitor.lock().ok().and_then(|m| m.hist.back().map(|s| s.vram_total)).filter(|&v| v > 0).unwrap_or(24576);
+        (ncpu, tpc, ram, vram)
+    }
+
+    /// CPU をコア数で動かす(左端は全部)。値はスレッド数で持つ(-t に渡す)
+    pub(crate) fn cpu_slider(ui: &mut egui::Ui, threads: &mut u32, ncpu: u32, tpc: u32) -> egui::Response {
+        let max = (ncpu / tpc.max(1)).max(1);
+        let mut c = threads.div_ceil(tpc.max(1)).min(max);
+        let r = ui.add(egui::Slider::new(&mut c, 0..=max).trailing_fill(true).custom_formatter(|v, _| if v == 0.0 { "全部".into() } else { format!("{v:.0} コア") }).custom_parser(Self::parse_zero));
+        if r.changed() {
+            *threads = c * tpc.max(1);
+        }
+        r
+    }
+
+    /// RAM を GB で動かす(左端は上限なし)
+    pub(crate) fn ram_slider(ui: &mut egui::Ui, gb: &mut f32, max: f32) -> egui::Response {
+        let mut g = gb.round();
+        let r = ui.add(egui::Slider::new(&mut g, 0.0..=max).step_by(1.0).trailing_fill(true).custom_formatter(|v, _| if v == 0.0 { "上限なし".into() } else { format!("{v:.0} GB") }).custom_parser(Self::parse_zero));
+        if r.changed() {
+            *gb = g;
+        }
+        r
+    }
+
+    /// VRAM を GB(0.5 刻み)で動かす(左端は上限なし)。値は MiB で持つ。触った時だけ書き戻す(丸めで値が変わらないように)
+    pub(crate) fn vram_slider(ui: &mut egui::Ui, mib: &mut u32, max_mib: u32) -> egui::Response {
+        let mut g = *mib as f32 / 1024.0;
+        let r = ui.add(egui::Slider::new(&mut g, 0.0..=max_mib as f32 / 1024.0).step_by(0.5).trailing_fill(true).custom_formatter(|v, _| if v == 0.0 { "上限なし".into() } else { format!("{v:.1} GB") }).custom_parser(Self::parse_zero));
+        if r.changed() && (r.dragged() || r.has_focus() || r.clicked()) {
+            *mib = (g * 1024.0).round() as u32;
+        }
+        r
     }
 
     /// 入り切りのスイッチ(押されたら true)
@@ -288,16 +431,27 @@ impl App {
                     }
                     None => {}
                 }
-                ui.separator();
-                let ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as u32;
-                ui.label(RichText::new("CPU のスレッド").color(MUTED));
-                ui.add(egui::DragValue::new(&mut s.threads).range(0..=ncpu).custom_formatter(|v, _| if v == 0.0 { "全部".into() } else { format!("{v:.0} 本") })).on_hover_text("0 は全部。次の 1 本から効きます");
-                ui.label(RichText::new("優先度").color(MUTED));
-                ui.add(egui::DragValue::new(&mut s.nice).range(0..=19).custom_formatter(|v, _| format!("nice {v:.0}"))).on_hover_text("0〜19。大きいほど後回しにして、ほかの作業を重くしません");
-                ui.label(RichText::new("RAM 上限").color(MUTED));
-                ui.add(egui::DragValue::new(&mut s.ram_gb).range(0.0..=1024.0).speed(0.5).custom_formatter(|v, _| if v == 0.0 { "無し".into() } else { format!("{v:.0} GB") })).on_hover_text("超えると、描いている物だけが止められます(systemd のスコープ)。次の 1 本から効きます");
-                ui.label(RichText::new("VRAM 上限").color(MUTED));
-                ui.add(egui::DragValue::new(&mut s.vram_mib).range(0..=81920).speed(64.0).custom_formatter(|v, _| if v == 0.0 { "無し".into() } else { format!("{v:.0} MiB") })).on_hover_text("全体の VRAM がこれに近い時は次を始めず、超えたら描いている物を止めます(VRAM は外から絞れないため)");
+            });
+            // 横に並べたスライダー(範囲はこの PC の量まで)
+            ui.add_space(10.0);
+            let (ncpu, tpc, ram_total, vram_total) = self.sys_caps();
+            let cw = ((w - 24.0) / 3.0).floor();
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let cell = |ui: &mut egui::Ui, title: &str, add: &mut dyn FnMut(&mut egui::Ui) -> egui::Response, tip: &str| {
+                    ui.allocate_ui_with_layout(Vec2::new(cw, 48.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_min_width(cw);
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.spacing_mut().slider_width = (cw - 100.0).max(60.0);
+                        Self::slider_look(ui);
+                        ui.label(RichText::new(title).size(12.0).color(MUTED));
+                        add(ui).on_hover_text(tip);
+                    });
+                };
+                // 描く順は一覧の上から(優先度は保存してある値のまま)
+                cell(ui, &format!("CPU({} コア)", ncpu / tpc.max(1)), &mut |ui| Self::cpu_slider(ui, &mut s.threads, ncpu, tpc), "使うコアの数。左端は全部。次の 1 本から効きます");
+                cell(ui, "RAM 上限", &mut |ui| Self::ram_slider(ui, &mut s.ram_gb, ram_total), "左端は上限なし。超えると、描いている物だけが止められます(systemd のスコープ)。次の 1 本から効きます");
+                cell(ui, "VRAM 上限", &mut |ui| Self::vram_slider(ui, &mut s.vram_mib, vram_total), "左端は上限なし。全体の VRAM がこれに近い時は次を始めず、超えたら描いている物を止めます(VRAM は外から絞れないため)");
             });
         });
         if s.nice != before.nice && cur.is_some() {
@@ -316,7 +470,7 @@ impl App {
 
     /// 選ぶ四角(押されたら true)
     /// 割り当ての 1 行: 入れると個別にする・数・全体の値
-    pub(crate) fn lim_row<T: egui::emath::Numeric>(ui: &mut egui::Ui, label: &str, v: &mut Option<T>, global: T, range: std::ops::RangeInclusive<T>, unit: &str, note: &str) {
+    pub(crate) fn lim_row<T: Copy>(ui: &mut egui::Ui, label: &str, v: &mut Option<T>, global: T, note: &str, add: &mut dyn FnMut(&mut egui::Ui, &mut T) -> egui::Response) {
         let mut on = v.is_some();
         if ui.checkbox(&mut on, label).changed() {
             *v = if on { Some(global) } else { None };
@@ -324,8 +478,10 @@ impl App {
         match v {
             Some(x) => {
                 ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(x).range(range).speed(0.25));
-                    ui.label(RichText::new(unit).size(11.5).color(FAINT));
+                    // 右の欄(幅 約 130)にも収まる長さ
+                    ui.spacing_mut().slider_width = 70.0;
+                    Self::slider_look(ui);
+                    add(ui, x);
                 });
             }
             None => {
@@ -470,10 +626,13 @@ impl App {
                 // 範囲と進み
                 let done = j.done_frames();
                 let total = j.count();
-                let cnt = match total {
+                let mut cnt = match total {
                     Some(t) => format!("{done} / {t} 枚"),
                     None => format!("{done} 枚"),
                 };
+                if let Some(eta) = j.remaining_text() {
+                    cnt += &format!("  ·  {eta}");
+                }
                 let sc = match j.state {
                     JobState::Running => ACCENT_TEXT,
                     JobState::Paused | JobState::Partial => WARN,
@@ -529,11 +688,11 @@ impl App {
                     ui.label(RichText::new("入れていない物は、一覧の全体の設定のまま。次に描き始める時から効きます").size(11.5).color(FAINT));
                     ui.add_space(6.0);
                     let g = self.queue.settings();
+                    let (ncpu, tpc, ram_total, vram_total) = self.sys_caps();
                     egui::Grid::new(("lim-grid", j.id)).num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                        Self::lim_row(ui, "CPU のスレッド", &mut lim.threads, g.threads, 0..=256, "本(0 で全部)", &format!("全体: {}", if g.threads == 0 { "全部".to_string() } else { format!("{} 本", g.threads) }));
-                        Self::lim_row(ui, "RAM の上限", &mut lim.ram_gb, g.ram_gb, 0.0..=1024.0, "GB(0 で無し)", &format!("全体: {}", if g.ram_gb <= 0.0 { "無し".to_string() } else { format!("{} GB", g.ram_gb) }));
-                        Self::lim_row(ui, "VRAM の上限", &mut lim.vram_mib, g.vram_mib, 0..=200000, "MiB(0 で無し)", &format!("全体: {} MiB", g.vram_mib));
-                        Self::lim_row(ui, "優先度(nice)", &mut lim.nice, g.nice, 0..=19, "(大きいほど後回し)", &format!("全体: {}", g.nice));
+                        Self::lim_row(ui, "CPU", &mut lim.threads, g.threads, &Self::cpu_note(g.threads, tpc), &mut |ui, x| Self::cpu_slider(ui, x, ncpu, tpc));
+                        Self::lim_row(ui, "RAM の上限", &mut lim.ram_gb, g.ram_gb, &Self::ram_note(g.ram_gb), &mut |ui, x| Self::ram_slider(ui, x, ram_total));
+                        Self::lim_row(ui, "VRAM の上限", &mut lim.vram_mib, g.vram_mib, &Self::vram_note(g.vram_mib), &mut |ui, x| Self::vram_slider(ui, x, vram_total));
                     });
                     ui.add_space(6.0);
                     if ui.add_enabled(!lim.is_empty(), egui::Button::new("全部を全体の設定に戻す")).clicked() {
@@ -631,6 +790,7 @@ impl App {
         ui.add_space(12.0);
         self.monitor_row(ui, w);
         ui.add_space(10.0);
+        self.progress_panel(ui, w);
         self.control_row(ui, w, ctx);
         ui.add_space(16.0);
         let jobs = self.queue.snapshot();
@@ -850,7 +1010,7 @@ impl App {
         places.push((I_PICTURE, "予約で描いた絵", PathBuf::from(scan::render_dir())));
         places.push((I_PICTURE, "ギャラリー(手で置く絵)", PathBuf::from(&crate::places::places().gallery)));
         if !crate::places::places().project.is_empty() {
-            places.push((I_BUILD, "建てる台本", PathBuf::from(format!("{}/scripts", crate::places::places().project))));
+            places.push((I_BUILD, "ビルドの台本", PathBuf::from(format!("{}/scripts", crate::places::places().project))));
         }
         places.push((I_FOLDER, "ランチャーの設定", config_dir()));
         ui.label(RichText::new(format!("{} の場所 · 押すとファイルの画面で開きます。▸ で中を広げます", b.title)).size(12.5).color(FAINT));

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Falcon Launcher を建てて、起動できるようにする。使い方: Falcon-Launcher の中で ./install.sh
-# 取ってくる所から: git clone --branch Falcon-Launcher-v0.1.0 https://github.com/Relrei/Falcon-Launcher.git && cd Falcon-Launcher && ./install.sh
+# Falcon Launcher をビルドして、起動できるようにする。使い方: Falcon-Launcher の中で ./install.sh
+# 取ってくる所から: git clone --branch Falcon-Launcher-v0.2.0 https://github.com/Relrei/Falcon-Launcher.git && cd Falcon-Launcher && ./install.sh
 # ビルド済みは配らない。Rust(cargo)が無ければ、公式の rustup を入れるかを聞く。管理者の権限は使わない。
 set -eu
 
@@ -35,11 +35,11 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "ランチャーを建てています(初めての時は数分かかります)..."
+echo "ランチャーをビルドしています(初めての時は数分かかります)..."
 cargo build --release
 
 BIN="$(pwd)/target/release/falcon-launcher"
-echo "建てられました: $BIN"
+echo "ビルドできました: $BIN"
 
 if ask "アプリのメニューに登録しますか?"; then
   DIR="$HOME/.local/share/applications"
@@ -58,4 +58,4 @@ fi
 
 echo
 echo "起動するには: $BIN"
-echo "次に、ランチャーの「建てる準備」の頁で、Falcon Engine を建てます。"
+echo "次に、ランチャーの「ビルドの準備」の頁で、Falcon Engine をビルドします。"

@@ -1,4 +1,4 @@
-//! ビルド先・枝・木を読む(書き込みはしない。起動と建てるは main.rs から子のプロセスで)。
+//! ビルド先・枝・木を読む(書き込みはしない。起動とビルドは main.rs から子のプロセスで)。
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -67,7 +67,7 @@ pub struct Build {
     /// git のリポジトリ
     pub repo: PathBuf,
     pub branch: String,
-    /// 建てた時の hash(建てた.txt)
+    /// ビルドした時の hash(建てた.txt)
     pub hash: String,
     pub dir: PathBuf,
     pub built_ts: i64,
@@ -297,7 +297,7 @@ pub fn scene_command(s: &Scene) -> String {
     c
 }
 
-/// 本体の機能の一覧を読む(建ての中の物を先に、無ければ枝から)。読むだけ
+/// 本体の機能の一覧を読む(ビルドの中の物を先に、無ければ枝から)。読むだけ
 pub fn features() -> Vec<Feature> {
     let src = fs::read_to_string(format!("{}/build/host/bin/5.3/scripts/addons_core/cycles/falcon_features.py", p_dir())).unwrap_or_else(|_| git(&["show", &format!("{MAIN_BRANCH}:intern/cycles/blender/addon/falcon_features.py")]));
     const READ: &str = r#"
@@ -459,23 +459,23 @@ fn blender_versions() -> Vec<Build> {
     let v5 = PathBuf::from(&pl.falcon_build);
     if v5.join("bin/blender").is_file() {
         let bin = v5.join("bin/blender").display().to_string();
-        // DLSS のランタイムの置き場(場所.tsv の dlss_runtime か、建てる準備で置いた DLSS SDK の中)。空白を含む場所は env に渡せないので渡さない
+        // DLSS のランタイムの置き場(場所.tsv の dlss_runtime か、ビルドの準備で置いた DLSS SDK の中)。空白を含む場所は env に渡せないので渡さない
         let exec = if !pl.dlss_runtime.is_empty() && !pl.dlss_runtime.contains(char::is_whitespace) { format!("env FALCON_DLSS_RUNTIME_PATH={} {bin}", pl.dlss_runtime) } else { bin };
         // 開発の場所がある PC は開発の名前の v5、公開の木はアドオンの版
         let title = if p_dir().is_empty() { falcon_version(&v5).map(|v| format!("Falcon Engine {v}")).unwrap_or_else(|| "Falcon Engine".into()) } else { "Falcon Engine v5".into() };
         let mut b = mk("v5".into(), title, "双方向・フォトンの集光・NR(DLSS RR)".into(), v5.clone(), exec, "Falcon Engine", src_dir(), &pl.falcon_branch);
         // 建てた.txt は build.sh でしか書かれないので、手で ninja を回すと古いまま残る(11-16: 本体は 17:11 に
-        // 建て直したのに「11-15 09:52・5af2b2c66」と出ていた)。本体の方が新しければ、本体の時刻を使い、番号も推し量る
+        // ビルドし直したのに「11-15 09:52・5af2b2c66」と出ていた)。本体の方が新しければ、本体の時刻を使い、番号も推し量る
         let bin_ts = mtime(&v5.join("bin/blender"));
         if bin_ts > b.built_ts + 60 {
             b.built_ts = bin_ts;
             b.hash.clear();
         }
         if b.hash.is_empty() {
-            // 建てた時刻より前の falcon/v5 の最後のコミット(推し量り)
+            // ビルドした時刻より前の falcon/v5 の最後のコミット(推し量り)
             b.hash = git(&["log", "-1", "--format=%H", &format!("--before=@{}", b.built_ts), &pl.falcon_branch]).trim().to_string();
         }
-        // GPU の核が建て先では新しいのに、起動する所(bin)へ入っていない時(ninja install をしていない)に知らせる
+        // GPU の核がビルド先では新しいのに、起動する所(bin)へ入っていない時(ninja install をしていない)に知らせる
         let built_k = v5.join("intern/neural_render/kernel/device/cuda/kernel_sm_86.cubin.zst");
         let used_k = v5.join("bin/5.3/scripts/addons_core/neural_render/lib/kernel_sm_86.cubin.zst");
         if built_k.is_file() && used_k.is_file() && mtime(&built_k) > mtime(&used_k) + 60 {
@@ -483,7 +483,7 @@ fn blender_versions() -> Vec<Build> {
         }
         out.push(b);
     }
-    // 更新の時に残した前の版(<建てる場所>/前の版/<版>/blender。setup.rs が移す)
+    // 更新の時に残した前の版(<ビルドする場所>/前の版/<版>/blender。setup.rs が移す)
     if let Some(place) = v5.parent() {
         let mut prev: Vec<PathBuf> = fs::read_dir(place.join("前の版")).into_iter().flatten().flatten().map(|e| e.path()).filter(|d| d.join("blender").is_file()).collect();
         prev.sort();
@@ -491,7 +491,7 @@ fn blender_versions() -> Vec<Build> {
             let ver = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let bin = d.join("blender").display().to_string();
             let exec = if !pl.dlss_runtime.is_empty() && !pl.dlss_runtime.contains(char::is_whitespace) { format!("env FALCON_DLSS_RUNTIME_PATH={} {bin}", pl.dlss_runtime) } else { bin };
-            let mut b = mk(format!("prev:{ver}"), format!("Falcon Engine {ver}(前の版)"), format!("更新の前に建てていた版({})", d.display()), d.clone(), exec, "Falcon Engine", "", "");
+            let mut b = mk(format!("prev:{ver}"), format!("Falcon Engine {ver}(前の版)"), format!("更新の前にビルドしていた版({})", d.display()), d.clone(), exec, "Falcon Engine", "", "");
             b.built_ts = mtime(&d.join("blender"));
             out.push(b);
         }
@@ -508,7 +508,7 @@ fn blender_versions() -> Vec<Build> {
 }
 
 /// 手元の公式 Blender を探す(見つかれば自動で登録)。
-/// 展開した blender-<版>-linux-* のフォルダと、パッケージ・flatpak・Steam・snap の本体。Falcon の建てた物は除く
+/// 展開した blender-<版>-linux-* のフォルダと、パッケージ・flatpak・Steam・snap の本体。Falcon でビルドした物は除く
 pub fn official_blenders() -> Vec<(PathBuf, String)> {
     let home = std::env::var("HOME").unwrap_or_default();
     let mut bins: Vec<PathBuf> = vec![];
@@ -538,7 +538,7 @@ pub fn official_blenders() -> Vec<(PathBuf, String)> {
     out
 }
 
-/// Falcon Engine の版(建て先のアドオンの bl_info の "version": (0, 2, 0) → 0.2.0)
+/// Falcon Engine の版(ビルド先のアドオンの bl_info の "version": (0, 2, 0) → 0.2.0)
 pub fn falcon_version(build: &Path) -> Option<String> {
     let addons = fs::read_dir(build.join("bin")).ok()?.flatten().map(|e| e.path().join("scripts/addons_core/neural_render/__init__.py")).find(|p| p.is_file())?;
     let text = fs::read_to_string(addons).ok()?;
@@ -601,7 +601,7 @@ pub fn running_bins() -> HashSet<PathBuf> {
 
 // ---------- 重い物(背景の糸で読む) ----------
 
-/// 枝の先端と、建てた物より何本先か
+/// 枝の先端と、ビルドした時より何コミット進んでいるか
 pub fn ahead(branch: &str, hash: &str) -> Option<u32> {
     if branch.is_empty() || hash.is_empty() {
         return None;
@@ -647,7 +647,7 @@ pub fn trees(tx: std::sync::mpsc::Sender<Tree>, ctx: eframe::egui::Context) {
     }
 }
 
-/// ビルド先の大きさ(du -sb)。建て直すまで変わらないので、建てた時刻ごとに覚えておく
+/// ビルド先の大きさ(du -sb)。ビルドし直すまで変わらないので、ビルドした時刻ごとに覚えておく
 pub fn dir_size(dir: &Path) -> Option<u64> {
     let o = Command::new("du").arg("-sb").arg(dir).output().ok()?;
     String::from_utf8_lossy(&o.stdout).split_whitespace().next()?.parse().ok()
@@ -669,7 +669,7 @@ pub enum ChangeKind {
     Merge,
     /// 普通のコミット
     Commit,
-    /// 建てた記録
+    /// ビルドの記録
     Built,
     /// 版の台帳の行
     Version,
@@ -686,7 +686,7 @@ pub struct Change {
     pub tag: String,
     /// コミットの全 hash(中身は開いた時に読む)
     pub full: String,
-    /// 版と建てた記録の中身
+    /// 版とビルドの記録の中身
     pub body: Vec<String>,
     pub ok: bool,
 }
@@ -698,7 +698,7 @@ pub struct ChangeDetail {
     pub merged: Vec<(String, String)>,
 }
 
-/// そのビルドの更新履歴: 枝の本筋のコミット + 建てた記録 + 版の台帳
+/// そのビルドの更新履歴: 枝の本筋のコミット + ビルドの記録 + 版の台帳
 pub fn changes(b: &Build) -> Vec<Change> {
     let mut out = vec![];
     if !b.branch.is_empty() {
@@ -728,7 +728,7 @@ pub fn changes(b: &Build) -> Vec<Change> {
         if !ok {
             body.push(format!("失敗: {} 件", b.fails));
         }
-        out.push(Change { id: format!("built:{}:{}", b.key, b.built_ts), ts: b.built_ts, kind: ChangeKind::Built, title: if ok { format!("{} を建てた", b.title) } else { format!("{} を建てて失敗", b.title) }, who: "ビルド".into(), tag: b.hash.clone(), full: String::new(), body, ok });
+        out.push(Change { id: format!("built:{}:{}", b.key, b.built_ts), ts: b.built_ts, kind: ChangeKind::Built, title: if ok { format!("{} をビルドした", b.title) } else { format!("{} のビルドに失敗", b.title) }, who: "ビルド".into(), tag: b.hash.clone(), full: String::new(), body, ok });
     }
     let names: Vec<String> = if b.kind == Kind::Ext {
         vec![]

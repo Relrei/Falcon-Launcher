@@ -1,7 +1,6 @@
-//! 取って建てる・更新: Falcon Engine を GitHub から取り、部品を取り、設定して建てる。新しい版の検知もここ。
-//! 新しい版の検知と、ランチャーから Falcon Engine を取って建てるところまでを、ランチャーの中で済ませるため。
+//! 取得してビルド・更新: Falcon Engine を GitHub から取り、部品を取り、設定してビルドする。新しい版の検知もここ。
 //! 手順は Falcon Engine の docs/BUILD.md と同じ。違いは 2 つ:
-//! - tests/files(LFS で 890 MB ほど)は建てるのに要らないので取らない(lfs.fetchexclude)。
+//! - tests/files(LFS で 890 MB ほど)はビルドに要らないので取らない(lfs.fetchexclude)。
 //! - make update は部品(lib/linux_x64)だけにする(--no-blender --no-lfs-fallback)。タグの取り出しは枝が無く、
 //!   本体の更新は飛ばされる。LFS の予備(projects.blender.org)を足すと、tests/files をそこからまた取りに行くため。
 //! ランチャーが取ったソースだけを動かす(.git/falcon-launcher の印)。開発の木を取り違えて切り替えないため。
@@ -56,7 +55,7 @@ pub struct Remote {
     pub checked: Option<Instant>,
 }
 
-/// 建てた版(建て先のアドオンの bl_info)
+/// ビルドした版(ビルド先のアドオンの bl_info)
 pub fn built_version() -> Option<String> {
     scan::falcon_version(Path::new(&places::places().falcon_build))
 }
@@ -84,7 +83,7 @@ pub fn source_is_foreign() -> bool {
 /// 手元の様子(git を起こすので、毎コマではなく数秒ごとに取る)
 #[derive(Clone, Debug, Default)]
 pub struct Info {
-    /// 建てた版(0.7.0)。bin/blender が無ければ None
+    /// ビルドした版(0.7.0)。bin/blender が無ければ None
     pub built: Option<String>,
     /// ソースが今いるタグ
     pub source_tag: Option<String>,
@@ -104,7 +103,7 @@ pub fn info() -> Info {
 }
 
 impl Info {
-    /// latest が今の版(建てた版。まだなら取ったソースのタグ)より新しいか
+    /// latest が今の版(ビルドした版。まだなら取ったソースのタグ)より新しいか
     pub fn is_newer(&self, latest: &str) -> bool {
         let Some(l) = parse_ver(latest) else { return false };
         let cur = self.built.as_deref().and_then(parse_ver).or_else(|| self.source_tag.as_deref().and_then(parse_ver));
@@ -166,7 +165,7 @@ pub fn status() -> Status {
     s
 }
 
-/// 建てる時の並びの数(準備.tsv の jobs。無ければ CPU の半分。在席中の画面を重くしないため)
+/// ビルドに使うスレッドの数(準備.tsv の jobs。無ければ CPU の半分。在席中の画面を重くしないため)
 pub fn jobs(paths: &HashMap<String, String>) -> u32 {
     paths.get("jobs").and_then(|j| j.parse().ok()).filter(|&j| j > 0).unwrap_or_else(|| (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2) as u32 / 2).max(1))
 }
@@ -205,10 +204,10 @@ pub fn plan(tag: &str, paths: &HashMap<String, String>) -> Result<Plan, String> 
     let source = pl.source.clone();
     let build = pl.falcon_build.clone();
     if source_is_foreign() {
-        return Err(format!("{source} はランチャーが取ったソースではないので、切り替えません(開発の木など)。建てる準備で別の「建てる場所」を選んでください"));
+        return Err(format!("{source} はランチャーが取ったソースではないので、切り替えません(開発の木など)。ビルドの準備で別の「ビルドする場所」を選んでください"));
     }
     let fresh = !Path::new(&source).join(".git").exists();
-    let optix = paths.get("optix").cloned().filter(|p| Path::new(p).join("include/optix.h").is_file()).ok_or("OptiX SDK の場所がまだです(建てる準備で置いてください)")?;
+    let optix = paths.get("optix").cloned().filter(|p| Path::new(p).join("include/optix.h").is_file()).ok_or("OptiX SDK の場所がまだです(ビルドの準備で置いてください)")?;
     let dlss = paths.get("dlss").cloned().filter(|p| Path::new(p).join("include/nvsdk_ngx.h").is_file());
     let cuda = paths.get("cuda").cloned().filter(|p| Path::new(p).join("bin/nvcc").is_file());
     let arch = cuda_arch().unwrap_or_else(|| "sm_86".into());
@@ -219,7 +218,7 @@ pub fn plan(tag: &str, paths: &HashMap<String, String>) -> Result<Plan, String> 
     let place = Path::new(&build).parent().map(|p| p.display().to_string()).unwrap_or_default();
 
     let mut s = String::new();
-    s += "#!/bin/bash\n# Falcon Launcher が書いた台本(取って建てる)。走らせるたびに書き直す\nset -eo pipefail\n";
+    s += "#!/bin/bash\n# Falcon Launcher が書いた台本(取得してビルド)。走らせるたびに書き直す\nset -eo pipefail\n";
     // 止めた時(TERM)は 143。EXIT の $? は、信号で止まった時に 0 になることがあった(11-17 の試し)
     let rc = q(&rc_path().display().to_string());
     s += &format!("RC={rc}\nSTAGE={}\n", q(&stage_path().display().to_string()));
@@ -279,7 +278,7 @@ pub fn plan(tag: &str, paths: &HashMap<String, String>) -> Result<Plan, String> 
         args.push("-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache".into());
     }
     s += &format!("cmake {}\n", args.join(" \\\n  "));
-    s += "stage \"4/4 建てる\"\n";
+    s += "stage \"4/4 ビルドする\"\n";
     let tool = if ninja { format!("ninja -j{jobs} install") } else { format!("make -j{jobs} install") };
     s += &format!("nice -n 10 {tool}\n");
     s += "stage \"終わり($TAG)\"\n";

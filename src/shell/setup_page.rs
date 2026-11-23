@@ -1,5 +1,4 @@
-//! 建てる準備の頁の「取って建てる・更新」の枠と、その確かめの画面・見回り(中身は setup.rs)。
-//! 新しい版の検知と、ランチャーから Falcon Engine を取って建てるところまでを、ランチャーの中で済ませるため。
+//! ビルドの準備の頁の「取得してビルド・更新」の枠と、その確かめの画面・見回り(中身は setup.rs)。
 
 use super::*;
 
@@ -39,10 +38,10 @@ impl App {
                 self.builds = scan::builds();
                 self.prep_checks = prep::check_all(&self.prep_paths);
                 self.message = match setup::last_rc() {
-                    Some(0) => "Falcon Engine を建て終わりました。ホームの版の一覧から起動できます".into(),
-                    Some(143) => "取って建てるを止めました。もう一度押すと続きから建てます".into(),
-                    Some(rc) => format!("取って建てるが途中で止まりました(rc {rc})。建てる準備の頁に記録の終わりを出しています"),
-                    None => "取って建てるが終わりました(結果が分かりません)".into(),
+                    Some(0) => "Falcon Engine のビルドが終わりました。ホームの版の一覧から起動できます".into(),
+                    Some(143) => "「取得してビルド」を止めました。もう一度押すと続きからビルドします".into(),
+                    Some(rc) => format!("「取得してビルド」が途中で止まりました(rc {rc})。ビルドの準備の頁に記録の終わりを出しています"),
+                    None => "「取得してビルド」が終わりました(うまくいったかは分かりません)".into(),
                 };
             }
             self.setup_running = now;
@@ -66,10 +65,10 @@ impl App {
         if self.setup_running || self.setup_info.foreign || !self.setup_info.is_newer(&latest) {
             return;
         }
-        // 今の版: 建てた版。まだ建てていなければ、取ったソースの版
+        // 今の版: ビルドした版。まだビルドしていなければ、取ったソースの版
         let cur = match (&self.setup_info.built, &self.setup_info.source_tag) {
             (Some(b), _) => b.clone(),
-            (None, Some(t)) => format!("ソース {}・まだ建てていません", t.trim_start_matches(setup::TAG_PREFIX)),
+            (None, Some(t)) => format!("ソース {}・まだビルドしていません", t.trim_start_matches(setup::TAG_PREFIX)),
             (None, None) => "?".into(),
         };
         egui::Frame::new().fill(ACCENT.gamma_multiply(0.10)).stroke(Stroke::new(1.0, ACCENT.gamma_multiply(0.6))).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
@@ -77,7 +76,7 @@ impl App {
                 ui.label(RichText::new(I_DOWNLOAD).size(15.0).color(ACCENT_TEXT));
                 ui.label(RichText::new(format!("Falcon Engine の新しい版 {} があります(今は {cur})", latest.trim_start_matches(setup::TAG_PREFIX))).font(bold(14.0)).color(TEXT));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(row_button("建てる準備で更新する")).clicked() {
+                    if ui.add(row_button("ビルドの準備で更新する")).clicked() {
                         self.goto(View::Prep, ctx);
                     }
                 });
@@ -86,12 +85,12 @@ impl App {
         ui.add_space(14.0);
     }
 
-    /// 建てる準備の頁の枠
+    /// ビルドの準備の頁の枠
     pub(crate) fn setup_card(&mut self, ui: &mut egui::Ui, w: f32, ctx: &egui::Context) {
         let info = self.setup_info.clone();
-        let note = "GitHub から Falcon Engine を取り、Blender の部品を取り、設定して建てます(docs/BUILD.md と同じ手順)。ランチャーを閉じても続きます";
+        let note = "GitHub から Falcon Engine を取り、Blender の部品を取り、設定してビルドします(docs/BUILD.md と同じ手順)。ランチャーを閉じても続きます";
         let mut start_tag: Option<String> = None;
-        Self::settings_card(ui, w, "Falcon Engine を取って建てる・更新", note, |ui, iw| {
+        Self::settings_card(ui, w, "Falcon Engine を取得してビルド・更新", note, |ui, iw| {
             // 置き場の版
             ui.horizontal(|ui| {
                 ui.label(RichText::new("置き場の一番新しい版").size(13.0).color(MUTED));
@@ -109,7 +108,7 @@ impl App {
                 });
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new("建てた版").size(13.0).color(MUTED));
+                ui.label(RichText::new("ビルドした版").size(13.0).color(MUTED));
                 let built = info.built.clone().unwrap_or_else(|| "まだ".into());
                 ui.label(RichText::new(built).font(bold(13.5)).color(TEXT));
                 let src = match (&info.source_tag, info.has_source) {
@@ -132,7 +131,7 @@ impl App {
                     ui.add(egui::ProgressBar::new(f).desired_width(iw).text(RichText::new(t).color(TEXT)));
                 }
             } else if setup::last_rc() == Some(143) {
-                ui.label(RichText::new(format!("\u{f04d}  前の回は「{}」の所で止めました。もう一度押すと続きから建てます", st.stage)).font(bold(13.5)).color(MUTED));
+                ui.label(RichText::new(format!("\u{f04d}  前の回は「{}」の所で止めました。もう一度押すと続きからビルドします", st.stage)).font(bold(13.5)).color(MUTED));
             } else if let Some(rc) = setup::last_rc().filter(|&rc| rc != 0) {
                 ui.label(RichText::new(format!("\u{f071}  前の回は「{}」で失敗しました(rc {rc})。下は記録の終わりです", st.stage)).font(bold(13.5)).color(WARN));
             } else if setup::last_rc() == Some(0) && st.stage.starts_with("終わり") {
@@ -152,9 +151,9 @@ impl App {
             // 押す物
             ui.horizontal_wrapped(|ui| {
                 if self.setup_running {
-                    if ui.add(soft_button("\u{f04d}  止める")).on_hover_text("台本と、その下の git・ninja をまとめて止めます。次に始めると、建てた所の続きから建てます").clicked() {
+                    if ui.add(soft_button("\u{f04d}  止める")).on_hover_text("台本と、その下の git・ninja をまとめて止めます。次に始めると、止めた所の続きからビルドします").clicked() {
                         setup::stop();
-                        self.message = "取って建てるを止めました".into();
+                        self.message = "「取得してビルド」を止めました".into();
                     }
                 } else if info.foreign {
                     ui.label(RichText::new(format!("{} はランチャーが取ったソースではないので(開発の木など)、ここからは切り替えません", places::places().source)).size(12.5).color(FAINT));
@@ -162,13 +161,13 @@ impl App {
                     let need_ok = self.prep_checks.iter().filter(|c| !c.optional).all(|c| c.state == prep::State::Ok);
                     let v = latest.trim_start_matches(setup::TAG_PREFIX).to_string();
                     let (label, primary) = if info.is_newer(&latest) {
-                        (format!("{I_DOWNLOAD}  {} → {v} に更新して建てる", info.built.clone().or(info.source_tag.clone()).unwrap_or_default().trim_start_matches(setup::TAG_PREFIX)), true)
+                        (format!("{I_DOWNLOAD}  {} → {v} に更新してビルドする", info.built.clone().or(info.source_tag.clone()).unwrap_or_default().trim_start_matches(setup::TAG_PREFIX)), true)
                     } else if !info.has_source {
-                        (format!("{I_DOWNLOAD}  {v} を取って建てる"), true)
+                        (format!("{I_DOWNLOAD}  {v} を取得してビルドする"), true)
                     } else if info.built.is_none() {
-                        (format!("{I_BUILD}  {v} を建てる(続きから)"), true)
+                        (format!("{I_BUILD}  {v} をビルドする(続きから)"), true)
                     } else {
-                        (format!("{I_BUILD}  {v} を建て直す"), false)
+                        (format!("{I_BUILD}  {v} をビルドし直す"), false)
                     };
                     let b = if primary { accent_button(label) } else { soft_button(label) };
                     let r = ui.add_enabled(need_ok, b);
@@ -185,16 +184,17 @@ impl App {
                 }
             });
             ui.add_space(6.0);
-            // 並びの数
+            // ビルドに使うスレッドの数(ninja -j に渡す。コアとスレッドを取り違えないよう、両方を出す)
             ui.horizontal(|ui| {
-                ui.label(RichText::new("建てる時の並びの数").size(12.5).color(MUTED));
-                let max = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2) as u32;
+                ui.label(RichText::new("ビルドに使うスレッドの数").size(12.5).color(MUTED));
+                let (max, tpc, _, _) = self.sys_caps();
+                let cores = max / tpc.max(1);
                 let mut j = setup::jobs(&self.prep_paths);
-                if ui.add(egui::DragValue::new(&mut j).range(1..=max)).changed() {
+                if ui.add(egui::DragValue::new(&mut j).range(1..=max).suffix(" スレッド")).changed() {
                     self.prep_paths.insert("jobs".into(), j.to_string());
                     prep::save_paths(&self.prep_paths);
                 }
-                ui.label(RichText::new(format!("(nice -n 10 で回します。CPU {max} のうち。多いほど速く、画面が重くなります)")).size(12.0).color(FAINT));
+                ui.label(RichText::new(format!("(この PC は {cores} コア・{max} スレッド。多いほど早く終わりますが、その間は画面が重くなります。ほかの作業を優先して回します)")).size(12.0).color(FAINT));
             });
         });
         if let Some(tag) = start_tag {
@@ -212,7 +212,7 @@ impl App {
         let resp = egui::Modal::new(egui::Id::unique("falcon-launcher-setup-confirm")).show(ctx, |ui| {
             ui.set_width(620.0);
             let v = p.tag.trim_start_matches(setup::TAG_PREFIX);
-            ui.label(RichText::new(if p.fresh { format!("Falcon Engine {v} を取って建てます") } else { format!("Falcon Engine を {v} にして建てます") }).size(17.0).color(TEXT));
+            ui.label(RichText::new(if p.fresh { format!("Falcon Engine {v} を取得してビルドします") } else { format!("Falcon Engine を {v} にしてビルドします") }).size(17.0).color(TEXT));
             ui.add_space(8.0);
             let mut lines = vec![];
             if p.fresh {
@@ -222,12 +222,12 @@ impl App {
             }
             lines.push(if p.fresh { "2. Blender の部品(lib/linux_x64、約 2.4 GB)を projects.blender.org から取ります".into() } else { "2. Blender の部品(lib/linux_x64)を確かめます(版で変わっていれば取ります)".into() });
             lines.push(format!("3. 設定します: CUDA の核 {} · DLSS {}", p.arch, if p.dlss.is_some() { "あり" } else { "なし(Neural Rendering は使えません)" }));
-            lines.push(format!("4. 建てます: {} へ。nice -n 10 で並び {}。初めては 1〜2 時間ほど、更新は変わった所だけ", p.build, p.jobs));
+            lines.push(format!("4. ビルドします({} スレッドを使います): {} へ。初めては 1〜2 時間ほど、2 回目からは変わった所だけビルドします", p.jobs, p.build));
             for l in lines {
                 ui.add(egui::Label::new(RichText::new(l).size(12.5).color(MUTED)).wrap());
             }
             ui.add_space(6.0);
-            ui.add(egui::Label::new(RichText::new("CUDA・OptiX・DLSS は建てる準備で置いた物を使います(ランチャーは NVIDIA の物を取りに行きません)").size(12.0).color(FAINT)).wrap());
+            ui.add(egui::Label::new(RichText::new("CUDA・OptiX・DLSS はビルドの準備で置いた物を使います(ランチャーは NVIDIA の物を取りに行きません)").size(12.0).color(FAINT)).wrap());
             ui.collapsing(RichText::new("走らせる台本").size(12.5).color(MUTED), |ui| {
                 egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                     ui.add(egui::Label::new(RichText::new(&p.script).family(egui::FontFamily::Monospace).size(11.0).color(MUTED)).wrap());
@@ -246,7 +246,7 @@ impl App {
         if go {
             let p = self.setup_confirm.take().unwrap();
             self.message = match setup::start(&p) {
-                Ok(()) => format!("取って建てるを始めました(記録: {})", setup::log_path().display()),
+                Ok(()) => format!("「取得してビルド」を始めました(記録: {})", setup::log_path().display()),
                 Err(e) => format!("始められませんでした: {e}"),
             };
             self.setup_running = setup::running_pid().is_some();

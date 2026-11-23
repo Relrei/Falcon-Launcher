@@ -183,16 +183,17 @@ impl App {
         });
     }
 
-    /// 割り当て(CPU・RAM・優先度)。VRAM はここには出さない
+    /// 割り当て(CPU・RAM。優先度と VRAM はここでは出さない)
     fn limit_section(&mut self, ui: &mut egui::Ui, j: &Job, lim: &mut Limits) {
         let g = self.queue.settings();
+        let (ncpu, tpc, ram_total, _) = self.sys_caps();
         Self::panel_head(ui, "rp-limits", "割り当て", |ui| {
             ui.label(RichText::new("入れていない物は、一覧の全体の設定のまま").size(11.0).color(FAINT));
             ui.add_space(4.0);
             egui::Grid::new(("rp-lim-grid", j.id)).num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
-                Self::lim_row(ui, "CPU のスレッド", &mut lim.threads, g.threads, 0..=256, "本(0 で全部)", &format!("全体: {}", if g.threads == 0 { "全部".to_string() } else { format!("{} 本", g.threads) }));
-                Self::lim_row(ui, "RAM の上限", &mut lim.ram_gb, g.ram_gb, 0.0..=1024.0, "GB(0 で無し)", &format!("全体: {}", if g.ram_gb <= 0.0 { "無し".to_string() } else { format!("{} GB", g.ram_gb) }));
-                Self::lim_row(ui, "優先度(nice)", &mut lim.nice, g.nice, 0..=19, "", &format!("全体: {}", g.nice));
+                // CPU はコア数、メモリは GB で動かす
+                Self::lim_row(ui, "CPU", &mut lim.threads, g.threads, &Self::cpu_note(g.threads, tpc), &mut |ui, x| Self::cpu_slider(ui, x, ncpu, tpc));
+                Self::lim_row(ui, "RAM の上限", &mut lim.ram_gb, g.ram_gb, &Self::ram_note(g.ram_gb), &mut |ui, x| Self::ram_slider(ui, x, ram_total));
             });
         });
     }

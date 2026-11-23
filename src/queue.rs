@@ -253,8 +253,8 @@ impl Limits {
     pub fn text(&self) -> String {
         let mut v = vec![];
         if let Some(x) = self.threads { v.push(if x == 0 { "CPU 全部".to_string() } else { format!("CPU {x} 本") }); }
-        if let Some(x) = self.ram_gb { v.push(if x <= 0.0 { "RAM 無し".to_string() } else { format!("RAM {x} GB") }); }
-        if let Some(x) = self.vram_mib { v.push(if x == 0 { "VRAM 無し".to_string() } else { format!("VRAM {x} MiB") }); }
+        if let Some(x) = self.ram_gb { v.push(if x <= 0.0 { "RAM 上限なし".to_string() } else { format!("RAM {x} GB") }); }
+        if let Some(x) = self.vram_mib { v.push(if x == 0 { "VRAM 上限なし".to_string() } else { format!("VRAM {x} MiB") }); }
         if let Some(x) = self.nice { v.push(format!("nice {x}")); }
         v.join(" · ")
     }
@@ -285,6 +285,51 @@ impl Job {
             return 0;
         }
         std::fs::read_dir(&self.out).map(|r| r.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png" || x == "exr" || x == "jpg")).count()).unwrap_or(0)
+    }
+    /// 1 枚の秒(描いている間だけ。今回描いた絵のファイルの時刻の間隔から。始めの 1 枚は起動・組み立ての時間が入るので数えない)。
+    /// Some(None) は描いているがまだ 2 枚に満たない時
+    pub fn per_frame_secs(&self) -> Option<Option<f64>> {
+        if self.state != JobState::Running || self.started <= 0 || self.out.as_os_str().is_empty() {
+            return None;
+        }
+        let mut times: Vec<i64> = std::fs::read_dir(&self.out)
+            .map(|r| {
+                r.flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "png" || x == "exr" || x == "jpg"))
+                    .filter_map(|e| e.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as i64))
+                    .filter(|&t| t >= self.started * 1000)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if times.len() < 2 {
+            return Some(None);
+        }
+        times.sort_unstable();
+        Some(Some((times[times.len() - 1] - times[0]) as f64 / (times.len() - 1) as f64 / 1000.0))
+    }
+    /// 残りの秒(描いた速さから計算する)。Some(None) はまだ計っている時
+    pub fn remaining_secs(&self) -> Option<Option<i64>> {
+        let total = self.count()? as i64;
+        let per = self.per_frame_secs()?;
+        let left = (total - self.done_frames() as i64).max(0);
+        Some(per.map(|p| (p * left as f64).round() as i64))
+    }
+    /// 「約 8 分」「約 1 時間 5 分」「1 分未満」
+    pub fn rough(r: i64) -> String {
+        if r < 60 {
+            "1 分未満".to_string()
+        } else if r < 3600 {
+            format!("約 {} 分", (r + 30) / 60)
+        } else {
+            format!("約 {} 時間 {} 分", r / 3600, (r % 3600 + 30) / 60)
+        }
+    }
+    /// 「残り 約 8 分 · 今日 14:20 ごろ」(描いていない時は None)
+    pub fn remaining_text(&self) -> Option<String> {
+        let Some(r) = self.remaining_secs()? else {
+            return Some("残りの時間を計っています".into());
+        };
+        Some(format!("残り {} · {} ごろ", Self::rough(r), when(now() + r)))
     }
     pub fn runnable(&self) -> bool {
         self.on && matches!(self.state, JobState::Wait | JobState::Partial)
@@ -679,7 +724,7 @@ impl Runner {
                     ended: 0,
                     inbox: name.clone(),
                     inbox_mtime: *mt,
-                    lim: Limits::default(),
+                        lim: Limits::default(),
                     scene_rs,
                     rs,
                 });

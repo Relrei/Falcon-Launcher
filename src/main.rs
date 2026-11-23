@@ -1,8 +1,9 @@
 //! Falcon Launcher。ビルドと Blender の版を見やすく管理して起動する、Rust + egui のデスクトップアプリ。
 //! 画面はビルドのカード・更新履歴・更新詳細を元にした。ワークスペース・チームの札は入れない(個人用)。
 //! 読むだけの物: ビルド先の 建てた.txt・.building・build.log、git の枝と木。
-//! 動かす物: 起動(本体・古い版の .desktop の Exec)・フォルダを開く(xdg-open)・試験を建てる(build.sh)。
-//! 置き場は places.rs(~/.config/falcon-launcher/場所.tsv。11-17 公開のため決め打ちをやめた)。
+//! 動かす物: 起動(本体・古い版の .desktop の Exec)・フォルダを開く(xdg-open)・試験をビルドする(build.sh)。
+//! 置き場は places.rs(~/.config/falcon-launcher/場所.tsv)。
+mod addons;
 mod page;
 mod places;
 mod prep;
@@ -11,6 +12,7 @@ mod scan;
 mod setup;
 mod shell;
 mod start;
+mod video;
 
 use eframe::egui;
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -69,6 +71,11 @@ const I_HDD: &str = "\u{f0a0}";
 const I_CLOCK: &str = "\u{f017}";
 const I_PICTURE: &str = "\u{f03e}";
 const I_FILE: &str = "\u{f15b}";
+/// レンダリングの一覧
+const I_CAMERA: &str = "\u{f030}";
+/// 行の一覧とカードの並び
+const I_LIST: &str = "\u{f03a}";
+const I_TILES: &str = "\u{f009}";
 /// 割り当て(つまみの並び)
 const I_SLIDERS: &str = "\u{f1de}";
 
@@ -169,8 +176,10 @@ enum View {
     Log,
     /// 設定
     Settings,
-    /// 建てる準備(要る道具と SDK)
+    /// ビルドの準備(要る道具と SDK)
     Prep,
+    /// アドオンがどの版に入っているか
+    Addons,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -232,8 +241,8 @@ impl StateFilter {
             Self::All => "すべての状態",
             Self::Ready => "起動できる",
             Self::Building => "ビルド中",
-            Self::NotBuilt => "未建て",
-            Self::Failed => "建てて失敗",
+            Self::NotBuilt => "未ビルド",
+            Self::Failed => "ビルドに失敗",
         }
     }
 }
@@ -250,6 +259,62 @@ enum Action {
     LaunchFeature(String, String),
     LaunchScene(Scene),
 }
+
+/// レンダリング結果のまとめ方
+#[derive(Clone, Copy, PartialEq)]
+enum Group {
+    /// 期間ごと(幅は Look::period)
+    Period,
+    Album,
+    Scene,
+}
+
+/// 見え方の決まり(~/.config/falcon-launcher/表示.tsv)
+#[derive(Clone, PartialEq)]
+struct Look {
+    group: Group,
+    /// まとめる幅 0 1 週・1 2 週・2 1 か月・3 3 か月・4 半年・5 1 年
+    period: u8,
+    /// ギャラリーの横の枚数(0 は幅に合わせる)
+    cols: u8,
+    /// ビルドの一覧をカードで並べる
+    build_tiles: bool,
+}
+
+impl Look {
+    fn path() -> PathBuf {
+        config_dir().join("表示.tsv")
+    }
+
+    fn load() -> Self {
+        let mut l = Look { group: Group::Period, period: 2, cols: 0, build_tiles: false };
+        for line in std::fs::read_to_string(Self::path()).unwrap_or_default().lines() {
+            let Some((k, v)) = line.split_once('\t') else { continue };
+            match k {
+                "まとめ方" => l.group = match v { "組" => Group::Album, "シーン" => Group::Scene, _ => Group::Period },
+                "期間" => l.period = v.parse::<u8>().unwrap_or(2).min(5),
+                "横の枚数" => l.cols = v.parse::<u8>().unwrap_or(0).min(12),
+                "ビルドの並び" => l.build_tiles = v == "カード",
+                _ => {}
+            }
+        }
+        l
+    }
+
+    fn save(&self) {
+        let _ = std::fs::create_dir_all(config_dir());
+        let g = match self.group { Group::Period => "期間", Group::Album => "組", Group::Scene => "シーン" };
+        let text = format!("# Falcon Launcher の見え方(ランチャーが書く)\nまとめ方\t{g}\n期間\t{}\n横の枚数\t{}\nビルドの並び\t{}\n", self.period, self.cols, if self.build_tiles { "カード" } else { "行" });
+        let _ = std::fs::write(Self::path(), text);
+    }
+}
+
+/// ライブラリの絵: 先読みする幅と、控えに残す幅(画面の高さの何枚分)
+const PREFETCH_SCREENS: f32 = 1.0;
+const KEEP_SCREENS: f32 = 3.0;
+
+/// マウスのホイールとタッチパッドで動く量(egui の既定の 1.4 倍)
+const SCROLL_GAIN: f32 = 1.4;
 
 struct Heavy {
     updated: HashMap<String, i64>,
@@ -270,8 +335,25 @@ struct App {
     blend_ver: Option<String>,
     /// レンダリング結果の並び・まとめ方・閉じた見出し
     render_old_first: bool,
-    render_by_album: bool,
     render_closed: HashSet<String>,
+    /// 見え方(表示.tsv に残す)
+    look: Look,
+    /// アドオンの頁
+    addons: Option<Arc<addons::Addons>>,
+    addon_query: String,
+    addon_show_disabled: bool,
+    /// ライブラリの絵の控え(URI → 最後に残すと決めた回)と、最後にライブラリを描いた回
+    gallery_tex: HashMap<String, u64>,
+    gallery_drawn: u64,
+    /// 拡大表示の動画の再生と、拡大表示で読んだ絵(閉じたら控えから外す)
+    player: Option<video::Player>,
+    lightbox_uri: Option<String>,
+    /// 拡大表示の拡大(0 は全体に合わせる)・移動・見ている物・再生バーのドラッグ
+    lb_zoom: f32,
+    lb_pan: Vec2,
+    lb_item: Option<PathBuf>,
+    lb_scrub: Option<f64>,
+    lb_scrub_at: Instant,
     /// ホームで選んでいるビルド・タブ・最近の .blend と、その小さな絵の係
     sel: String,
     start_tab: StartTab,
@@ -341,7 +423,7 @@ struct App {
     trees_rx: Option<Receiver<Tree>>,
     tree_filter: String,
     confirm_build: Option<String>,
-    /// 建てる準備: 確かめた結果・置いた場所・書きかけの場所
+    /// ビルドの準備: 確かめた結果・置いた場所・書きかけの場所
     prep_checks: Vec<prep::Check>,
     prep_paths: HashMap<String, String>,
     prep_edit: HashMap<String, String>,
@@ -349,7 +431,7 @@ struct App {
     prep_rx: Option<Receiver<Result<prep::Taken, String>>>,
     prep_cmd: Option<(String, String)>,
     prep_paste: String,
-    /// 取って建てる・更新(setup.rs): 置き場の版の見回り・確かめの画面・走っている物
+    /// 取得してビルド・更新(setup.rs): 置き場の版の見回り・確かめの画面・走っている物
     remote: setup::Remote,
     remote_rx: Option<Receiver<Result<Vec<String>, String>>>,
     setup_confirm: Option<setup::Plan>,
@@ -428,8 +510,20 @@ impl App {
             blend_query: String::new(),
             blend_ver: None,
             render_old_first: false,
-            render_by_album: false,
             render_closed: HashSet::new(),
+            look: Look::load(),
+            addons: None,
+            addon_query: String::new(),
+            addon_show_disabled: false,
+            gallery_tex: HashMap::new(),
+            gallery_drawn: 0,
+            player: None,
+            lightbox_uri: None,
+            lb_zoom: 0.0,
+            lb_pan: Vec2::ZERO,
+            lb_item: None,
+            lb_scrub: None,
+            lb_scrub_at: Instant::now(),
             // 今の本線は v5(11-16)。無ければ v4 の本線
             sel: if Path::new(&places::places().falcon_build).join("bin/blender").is_file() || places::places().project.is_empty() { "v5".into() } else { "host".into() },
             start_tab: StartTab::Blend,
@@ -522,7 +616,7 @@ impl App {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let aheads = builds.iter().filter(|b| b.kind != Kind::Old).map(|b| (b.key.clone(), scan::ahead(&b.branch, &b.hash))).collect();
-            // 下の帯の空き: 場所.tsv の disk(無ければ Falcon の建て先)。まだ無い場所は、在る一番近い親で見る
+            // 下の帯の空き: 場所.tsv の disk(無ければ Falcon のビルド先)。まだ無い場所は、在る一番近い親で見る
             let mut probe = PathBuf::from(&places::places().disk);
             while !probe.exists() && probe.pop() {}
             let disk = scan::disk(&probe.display().to_string());
@@ -535,7 +629,7 @@ impl App {
         self.last_heavy = Instant::now();
     }
 
-    /// 建てた時刻が覚えている物と違うビルド先だけ du で測る
+    /// ビルドした時刻が覚えている物と違うビルド先だけ du で測る
     fn start_sizes(&mut self, ctx: &egui::Context) {
         let want: Vec<(String, PathBuf, i64)> = self
             .builds
@@ -697,7 +791,7 @@ impl App {
             .collect();
         match self.sort {
             Sort::Name => v.sort_by(|a, b| a.title.cmp(&b.title)),
-            // 本線と外の物 → ビルド中 → 建った物(新しい順)→ 未建て(名前順)
+            // 本線と外の物 → ビルド中 → ビルド済みの物(新しい順)→ 未ビルド(名前順)
             Sort::New => v.sort_by(|a, b| {
                 let rank = |x: &Build| (!matches!(x.kind, Kind::Main | Kind::Ext), x.kind == Kind::Ext, x.building.is_none(), !x.has_bin, -x.built_ts);
                 rank(a).cmp(&rank(b)).then_with(|| a.title.cmp(&b.title))
@@ -770,7 +864,7 @@ impl App {
         };
     }
 
-    /// 本線と試しの枝を起こす命令: 場所.tsv の wrapper(起動の台本)があればそれに単位を渡し、無ければ建て先の bin/blender
+    /// 本線と試しの枝を起こす命令: 場所.tsv の wrapper(起動の台本)があればそれに単位を渡し、無ければビルド先の bin/blender
     fn dev_command(&self, unit: &str) -> Command {
         let w = &places::places().wrapper;
         if w.is_empty() {
@@ -824,8 +918,8 @@ impl App {
             cmd.stderr(f2);
         }
         self.message = match cmd.spawn() {
-            Ok(_) => format!("{key} を建て始めました(台本の出力: {})", out.display()),
-            Err(e) => format!("{key} を建て始められませんでした: {e}"),
+            Ok(_) => format!("{key} のビルドを始めました(台本の出力: {})", out.display()),
+            Err(e) => format!("{key} のビルドを始められませんでした: {e}"),
         };
         self.last_light = Instant::now() - Duration::from_secs(10);
     }
@@ -978,17 +1072,17 @@ impl App {
         let mut close = false;
         let resp = egui::Modal::new(egui::Id::unique("falcon-launcher-confirm")).show(ctx, |ui| {
             ui.set_width(460.0);
-            ui.label(RichText::new(if key == "host" { "Falcon Engine v4 を建て直します".to_string() } else { format!("試験 {key} を建てます") }).size(17.0).color(TEXT));
+            ui.label(RichText::new(if key == "host" { "Falcon Engine v4 をビルドし直します".to_string() } else { format!("試験 {key} をビルドします") }).size(17.0).color(TEXT));
             ui.add_space(8.0);
             let text = if key == "host" {
                 format!("本体の木({})の {branch} を、{}/build/host へ差分ビルドします(nice -n 10 ninja -j5)。", scan::src_dir(), places::places().project)
             } else {
-                format!("本体の木({})を一時的に {branch} へ切り替えて、{}/build/test-{key} へ差分ビルドします(nice -n 10 ninja -j5)。終われば木は元の枝へ戻ります。\n本体の木に未コミットの変更がある時は、建てずに止まります。", scan::src_dir(), places::places().project)
+                format!("本体の木({})を一時的に {branch} へ切り替えて、{}/build/test-{key} へ差分ビルドします(nice -n 10 ninja -j5)。終われば木は元の枝へ戻ります。\n本体の木に未コミットの変更がある時は、ビルドせずに止まります。", scan::src_dir(), places::places().project)
             };
             ui.add(egui::Label::new(RichText::new(text).size(12.5).color(MUTED)).wrap());
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.add(button(RichText::new(format!("{I_BUILD}  建てる")).color(ON_ACCENT), true)).clicked() {
+                if ui.add(button(RichText::new(format!("{I_BUILD}  ビルドする")).color(ON_ACCENT), true)).clicked() {
                     go = true;
                 }
                 if ui.add(button(RichText::new("やめる").color(TEXT), false)).clicked() {
@@ -1006,9 +1100,26 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        for e in &mut raw.events {
+            // ctrl を押しながらの拡大には掛けない
+            if let egui::Event::MouseWheel { delta, modifiers, .. } = e {
+                if !modifiers.command {
+                    *delta *= SCROLL_GAIN;
+                }
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
+        // この前の回にライブラリを描いていなければ、ライブラリの絵を控えから全部外す
+        if !self.gallery_tex.is_empty() && ctx.cumulative_frame_nr() > self.gallery_drawn + 1 {
+            for (u, _) in self.gallery_tex.drain() {
+                ctx.forget_image(&u);
+            }
+        }
         // アドオンから届いた物を棚へ
         let cur = self.cur_build();
         let (added, removed) = self.queue.sync_inbox(&self.builds, cur.as_ref());
